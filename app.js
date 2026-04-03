@@ -173,6 +173,8 @@ const elements = {
   jobFamily: document.getElementById("jobFamily"),
   startDate: document.getElementById("startDate"),
   endDate: document.getElementById("endDate"),
+  dateFields: document.getElementById("dateFields"),
+  resultStage: document.querySelector(".result-stage"),
   modeInputs: Array.from(document.querySelectorAll('input[name="analysisMode"]')),
 };
 
@@ -185,7 +187,6 @@ function initialize() {
   setDefaultDates();
   updateDateInputs();
   renderBlueprint(elements.jobFamily.value);
-  renderDemoResult();
 
   elements.jobFamily.addEventListener("change", (event) => {
     renderBlueprint(event.target.value);
@@ -194,7 +195,6 @@ function initialize() {
   elements.modeInputs.forEach((input) => {
     input.addEventListener("change", () => {
       updateDateInputs();
-      renderDemoResult();
     });
   });
 
@@ -228,6 +228,7 @@ function updateDateInputs() {
   const enabled = getAnalysisMode() === "range";
   elements.startDate.disabled = !enabled;
   elements.endDate.disabled = !enabled;
+  elements.dateFields.classList.toggle("is-hidden", !enabled);
 }
 
 function renderBlueprint(roleKey) {
@@ -291,6 +292,7 @@ async function handleAnalyze(event) {
       : "지정한 기간의 공고를 모아 반복되는 자격증·가산점 포인트를 정리하고 있습니다."
   );
   renderLoadingState();
+  revealResults();
 
   try {
     const prompt = buildPrompt(payload);
@@ -522,6 +524,7 @@ function renderDemoResult() {
   renderQueries(demo.queries);
   renderAnalysis(demo.analysis);
   renderSources(demo.sources);
+  revealResults();
 }
 
 function renderQueries(queries) {
@@ -668,6 +671,13 @@ function renderErrorState(message) {
       <p>잠시 후 다시 시도하거나 데모 결과로 화면 구성을 먼저 확인해 보세요.</p>
     </div>
   `;
+}
+
+function revealResults() {
+  elements.resultStage.scrollIntoView({
+    behavior: "smooth",
+    block: "start",
+  });
 }
 
 function setBusy(isBusy) {
