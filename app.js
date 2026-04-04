@@ -1,5 +1,6 @@
-const LIVE_APP_URL =
-  "https://cdn.jsdelivr.net/gh/minsu0906/BPpelc@8d3eba3ea5b382cdb22237af07e9594bb7628b62/app.js";
+const LEGACY_APP_URL =
+  "https://cdn.jsdelivr.net/gh/minsu0906/BPpelc@6a3d1715ae0a75907443ba163a2f85a6b77cb24a/app.js";
+const nativeFetch = globalThis.fetch.bind(globalThis);
 
 const INVALID_FIELD_STYLE = `
   .field.is-invalid input,
@@ -14,6 +15,57 @@ const INVALID_FIELD_STYLE = `
     color: #962d2d;
   }
 `;
+
+function shouldPatchGeminiPayload(url, payload) {
+  if (!/generativelanguage\.googleapis\.com/i.test(url)) {
+    return false;
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  if (
+    !Array.isArray(payload.tools) ||
+    !payload.tools.some(
+      (tool) => tool && typeof tool === "object" && "google_search" in tool
+    )
+  ) {
+    return false;
+  }
+
+  return Boolean(
+    payload.generationConfig?.responseMimeType ||
+      payload.generationConfig?.responseJsonSchema
+  );
+}
+
+function sanitizeInit(url, init) {
+  if (!init || typeof init.body !== "string") {
+    return init;
+  }
+
+  try {
+    const payload = JSON.parse(init.body);
+    if (!shouldPatchGeminiPayload(url, payload)) {
+      return init;
+    }
+
+    const generationConfig = { ...(payload.generationConfig ?? {}) };
+    delete generationConfig.responseMimeType;
+    delete generationConfig.responseJsonSchema;
+
+    return {
+      ...init,
+      body: JSON.stringify({
+        ...payload,
+        generationConfig,
+      }),
+    };
+  } catch {
+    return init;
+  }
+}
 
 function ensureInvalidStyle() {
   if (document.getElementById("codex-invalid-style")) {
@@ -84,5 +136,15 @@ function enhanceValidationFeedback() {
   form.addEventListener("change", clearFieldError, true);
 }
 
-await import(LIVE_APP_URL);
+globalThis.fetch = function patchedFetch(input, init) {
+  const url =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input?.url ?? "";
+  return nativeFetch(input, sanitizeInit(url, init));
+};
+
+await import(LEGACY_APP_URL);
 enhanceValidationFeedback();
