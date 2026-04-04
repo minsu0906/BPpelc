@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>채용 공고 가점 정리</title>
+    <title>채용 공고 기준 정리</title>
     <meta
       name="description"
-      content="Gemini API를 이용해 최신 채용 공고 1건 또는 업로드한 공고 PDF를 기준으로 지원 정보, 채용 절차, 주요 가점 항목을 정리합니다."
+      content="최신 공고 1회 또는 업로드한 PDF 공고를 기준으로 채용 정보, 채용 절차, 주요 가점 항목을 정리합니다."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,25 +19,25 @@
   <body>
     <div class="page-shell">
       <header class="hero">
-        <div class="hero-copy">
-          <p class="kicker">Job Notice Summary</p>
-          <h1>핵심만 입력하고<br />공고 기준으로 바로 정리</h1>
-          <p class="hero-text">
-            원하는 기업 1곳과 공고 기준만 선택하면, 결과를 `정보`, `채용 절차`, `주요 가점
-            항목` 세 가지로 나눠 읽기 쉽게 정리합니다.
-          </p>
-        </div>
+        <p class="kicker">Job Notice Summary</p>
+        <h1>공고 기준으로 바로 정리</h1>
+        <p class="hero-text">
+          원하는 기업 1곳만 입력하면 됩니다. 최신 공고 1회는 Gemini로 찾고, 특정 공고는
+          PDF를 브라우저에서 직접 읽어 정리합니다.
+        </p>
+      </header>
 
-        <form id="analysisForm" class="panel form-panel">
-          <div class="form-head">
+      <main class="layout">
+        <section class="panel form-panel">
+          <div class="panel-top">
             <div>
               <p class="section-label">입력</p>
-              <h2>핵심 정보</h2>
+              <h2>필수 정보</h2>
             </div>
           </div>
 
-          <div class="field-stack">
-            <label class="field">
+          <form id="analysisForm" class="form-grid">
+            <label class="field span-2">
               <span>원하는 기업</span>
               <input
                 id="companyName"
@@ -48,9 +48,9 @@
               />
             </label>
 
-            <div class="field">
+            <div class="field span-2">
               <span>공고 기준</span>
-              <div class="choice-grid two">
+              <div class="choice-grid">
                 <label class="choice-pill">
                   <input type="radio" name="analysisMode" value="latest" required />
                   <span>최신 공고 1회</span>
@@ -62,10 +62,10 @@
               </div>
             </div>
 
-            <label id="uploadField" class="field upload-field is-hidden">
-              <span>특정 공고 PDF</span>
+            <label id="uploadField" class="field span-2 is-hidden">
+              <span>공고 PDF</span>
               <input id="noticeFile" name="noticeFile" type="file" accept=".pdf,application/pdf" />
-              <small>PDF 공고를 올리면 해당 문서만 기준으로 분석합니다.</small>
+              <small>업로드한 PDF를 브라우저에서 직접 읽어 정리합니다.</small>
             </label>
 
             <div class="field">
@@ -82,32 +82,19 @@
               </div>
             </div>
 
-            <div class="field">
-              <span>대상 범위</span>
-              <div class="choice-grid">
-                <label class="choice-pill">
-                  <input type="radio" name="targetRange" value="대기업" required />
-                  <span>대기업</span>
-                </label>
-                <label class="choice-pill">
-                  <input type="radio" name="targetRange" value="공기업" />
-                  <span>공기업</span>
-                </label>
-              </div>
-            </div>
-
             <label class="field">
-              <span>고용형태</span>
+              <span>고용 형태</span>
               <select id="employmentType" name="employmentType">
                 <option value="">선택 안 함</option>
-                <option value="인턴">인턴</option>
-                <option value="채용형 인턴">채용형 인턴</option>
-                <option value="계약직">계약직</option>
                 <option value="정규직">정규직</option>
+                <option value="채용형 인턴">채용형 인턴</option>
+                <option value="체험형 인턴">체험형 인턴</option>
+                <option value="계약직">계약직</option>
+                <option value="무기계약직">무기계약직</option>
               </select>
             </label>
 
-            <label class="field">
+            <label id="apiKeyField" class="field span-2">
               <span>Gemini API Key</span>
               <input
                 id="apiKey"
@@ -115,105 +102,103 @@
                 type="password"
                 placeholder="AIza..."
                 autocomplete="off"
-                required
               />
+              <small>최신 공고 1회 모드에서만 사용합니다.</small>
             </label>
-          </div>
 
-          <details class="detail-box">
-            <summary>세부 옵션</summary>
-            <div class="detail-body">
-              <label class="field">
-                <span>질문 사항</span>
-                <textarea
-                  id="questionPrompt"
-                  name="questionPrompt"
-                  rows="3"
-                  placeholder="예: 필기 전형에서 가장 중요한 가점 항목만 먼저 보여줘."
-                ></textarea>
-              </label>
+            <label class="field span-2">
+              <span>질문 사항</span>
+              <textarea
+                id="questionPrompt"
+                name="questionPrompt"
+                rows="4"
+                placeholder="예: 가점 항목을 먼저 보여주고, 각 전형의 배수와 배점을 빠짐없이 정리해줘"
+              ></textarea>
+            </label>
+
+            <div id="modeHelper" class="helper-card span-2" aria-live="polite"></div>
+
+            <div class="submit-row span-2">
+              <button type="submit" class="primary-button" id="analyzeButton">
+                공고 기준 분석하기
+              </button>
             </div>
-          </details>
-
-          <div class="submit-row">
-            <p class="caption">API 키는 브라우저 로컬 저장소에만 저장됩니다.</p>
-            <button type="submit" class="primary-button" id="analyzeButton">공고 기준 분석하기</button>
-          </div>
-        </form>
-      </header>
-
-      <main class="results">
-        <section class="results-head">
-          <div>
-            <p class="section-label">결과</p>
-            <h2>공고 분석 결과</h2>
-          </div>
-          <span id="statusBadge" class="status-badge">대기 중</span>
+          </form>
         </section>
 
-        <p id="statusText" class="status-text">
-          기업과 조건을 입력하면 공고 기준으로 정리된 결과가 아래에 표시됩니다.
-        </p>
-
-        <section id="noticeCard" class="panel notice-card">
-          <div class="empty-state">
-            <h3>기준 공고가 여기에 표시됩니다</h3>
-            <p>분석을 실행하면 기준이 된 공고명과 핵심 메모를 먼저 보여드립니다.</p>
-          </div>
-        </section>
-
-        <section class="result-sections">
-          <article class="panel result-panel">
-            <div class="panel-head">
-              <p class="section-label">01</p>
-              <h3>정보</h3>
+        <section class="results">
+          <div class="results-head">
+            <div>
+              <p class="section-label">결과</p>
+              <h2>공고 분석 결과</h2>
             </div>
-            <div id="informationPanel" class="panel-body">
+            <span id="statusBadge" class="status-badge">대기 중</span>
+          </div>
+
+          <p id="statusText" class="status-text">
+            기업과 조건을 입력하면 공고 기준으로 정리한 결과가 아래에 표시됩니다.
+          </p>
+
+          <section id="noticeCard" class="panel notice-card">
+            <div class="empty-state">
+              <h3>기준 공고가 여기에 표시됩니다</h3>
+              <p>분석을 실행하면 어떤 공고를 기준으로 정리했는지 먼저 보여드립니다.</p>
+            </div>
+          </section>
+
+          <section class="result-sections">
+            <article class="panel result-panel">
+              <div class="panel-head">
+                <p class="section-label">01</p>
+                <h3>정보</h3>
+              </div>
+              <div id="informationPanel" class="panel-body">
+                <div class="empty-state compact">
+                  <p>지원 자격, 고용 형태, 모집 인원 같은 기본 정보가 정리됩니다.</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="panel result-panel">
+              <div class="panel-head">
+                <p class="section-label">02</p>
+                <h3>채용 절차</h3>
+              </div>
+              <div id="processPanel" class="panel-body">
+                <div class="empty-state compact">
+                  <p>전형 단계별 일정, 평가 항목, 배수, 배점, 동점자 처리 기준을 정리합니다.</p>
+                </div>
+              </div>
+            </article>
+
+            <article class="panel result-panel">
+              <div class="panel-head">
+                <p class="section-label">03</p>
+                <h3>주요 가점 항목</h3>
+              </div>
+              <div id="bonusPanel" class="panel-body">
+                <div class="empty-state compact">
+                  <p>공고에 실제로 적힌 가점과 우대 사항을 중심으로 보여드립니다.</p>
+                </div>
+              </div>
+            </article>
+          </section>
+
+          <section class="panel source-panel">
+            <div class="panel-head">
+              <p class="section-label">근거</p>
+              <h3>출처</h3>
+            </div>
+            <div id="sourcePanel" class="panel-body">
               <div class="empty-state compact">
-                <p>지원 자격, 고용 형태, 모집 인원 같은 핵심 정보가 정리됩니다.</p>
+                <p>최신 공고 모드는 검색 링크를, 업로드 공고 모드는 업로드한 파일 기준임을 표시합니다.</p>
               </div>
             </div>
-          </article>
-
-          <article class="panel result-panel">
-            <div class="panel-head">
-              <p class="section-label">02</p>
-              <h3>채용 절차</h3>
-            </div>
-            <div id="processPanel" class="panel-body">
-              <div class="empty-state compact">
-                <p>전형 단계별 평가 항목, 배수, 배점, 동점자 처리 기준, 일정이 정리됩니다.</p>
-              </div>
-            </div>
-          </article>
-
-          <article class="panel result-panel">
-            <div class="panel-head">
-              <p class="section-label">03</p>
-              <h3>주요 가점 항목</h3>
-            </div>
-            <div id="bonusPanel" class="panel-body">
-              <div class="empty-state compact">
-                <p>가점이나 우대 사항이 명시된 항목만 우선적으로 보여드립니다.</p>
-              </div>
-            </div>
-          </article>
-        </section>
-
-        <section class="panel source-panel">
-          <div class="panel-head">
-            <p class="section-label">근거</p>
-            <h3>출처</h3>
-          </div>
-          <div id="sourcePanel" class="panel-body">
-            <div class="empty-state compact">
-              <p>최신 공고 모드에서는 검색 근거 링크를, 업로드 모드에서는 업로드한 파일명을 표시합니다.</p>
-            </div>
-          </div>
+          </section>
         </section>
       </main>
     </div>
 
-    <script src="./app.js"></script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>
