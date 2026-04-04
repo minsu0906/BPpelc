@@ -136,6 +136,24 @@ function enhanceValidationFeedback() {
   form.addEventListener("change", clearFieldError, true);
 }
 
+async function loadLegacyApp() {
+  const response = await fetch(LEGACY_APP_URL, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error("기준 앱 파일을 불러오지 못했습니다.");
+  }
+
+  const source = await response.text();
+  const blobUrl = URL.createObjectURL(
+    new Blob([source], { type: "text/javascript" })
+  );
+
+  try {
+    await import(blobUrl);
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
+  }
+}
+
 globalThis.fetch = function patchedFetch(input, init) {
   const url =
     typeof input === "string"
@@ -146,5 +164,5 @@ globalThis.fetch = function patchedFetch(input, init) {
   return nativeFetch(input, sanitizeInit(url, init));
 };
 
-await import(LEGACY_APP_URL);
+await loadLegacyApp();
 enhanceValidationFeedback();
