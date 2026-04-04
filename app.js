@@ -88,9 +88,42 @@ function getFieldLabel(element) {
   return label || "필수 입력";
 }
 
+function getForm() {
+  return document.getElementById("analysisForm");
+}
+
+function getStatusBadge() {
+  return document.getElementById("statusBadge");
+}
+
+function getStatusText() {
+  return document.getElementById("statusText");
+}
+
+function getFormStatus() {
+  return document.getElementById("formStatus");
+}
+
+function getEditButton() {
+  return document.getElementById("editButton");
+}
+
+function getNoticeFileInput() {
+  return document.getElementById("noticeFile");
+}
+
+function getAnalysisMode() {
+  return document.querySelector('input[name="analysisMode"]:checked')?.value ?? "";
+}
+
+function isPdfFile(file) {
+  return file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name));
+}
+
 function setValidationStatus(message) {
-  const badge = document.getElementById("statusBadge");
-  const text = document.getElementById("statusText");
+  const badge = getStatusBadge();
+  const text = getStatusText();
+  const formStatus = getFormStatus();
 
   if (badge) {
     badge.textContent = "입력 확인";
@@ -100,6 +133,34 @@ function setValidationStatus(message) {
   if (text) {
     text.textContent = message;
   }
+
+  if (formStatus) {
+    formStatus.textContent = message;
+    formStatus.className = "form-status error span-2";
+  }
+}
+
+function clearValidationStatus() {
+  const formStatus = getFormStatus();
+  if (!formStatus) {
+    return;
+  }
+
+  formStatus.textContent = "";
+  formStatus.className = "form-status span-2 is-hidden";
+}
+
+function setView(view, options = {}) {
+  document.body.dataset.view = view;
+
+  if (options.instant) {
+    return;
+  }
+
+  window.scrollTo({
+    top: 0,
+    behavior: "smooth",
+  });
 }
 
 function handleInvalidField(event) {
@@ -113,6 +174,7 @@ function handleInvalidField(event) {
     });
   }
 
+  setView("input");
   setValidationStatus(`${getFieldLabel(event.target)} 항목을 먼저 입력해 주세요.`);
 }
 
@@ -121,10 +183,102 @@ function clearFieldError(event) {
   if (field) {
     field.classList.remove("is-invalid");
   }
+
+  clearValidationStatus();
+}
+
+function isSubmissionReady() {
+  const form = getForm();
+  if (!form || !form.checkValidity()) {
+    return false;
+  }
+
+  if (getAnalysisMode() !== "upload") {
+    return true;
+  }
+
+  const fileInput = getNoticeFileInput();
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    setValidationStatus("특정 공고 분석을 위해 PDF 파일을 업로드해 주세요.");
+    return false;
+  }
+
+  if (!isPdfFile(file)) {
+    setValidationStatus("PDF 파일만 업로드할 수 있습니다.");
+    return false;
+  }
+
+  return true;
+}
+
+function handleSubmitViewChange() {
+  if (!isSubmissionReady()) {
+    setView("input");
+    return;
+  }
+
+  clearValidationStatus();
+  setView("results");
+}
+
+function handleEdit() {
+  setView("input");
+  clearValidationStatus();
+  document.getElementById("companyName")?.focus();
+}
+
+function isRenderedEmptyResult() {
+  const badgeText = getStatusBadge()?.textContent?.trim() ?? "";
+  const noticeTitle = document.querySelector(".notice-title")?.textContent?.trim() ?? "";
+
+  if (badgeText !== "완료") {
+    return false;
+  }
+
+  return noticeTitle === "기업명 미기재 / 공고 제목 미기재";
+}
+
+function reconcileRenderedResult() {
+  if (!isRenderedEmptyResult()) {
+    return;
+  }
+
+  const badge = getStatusBadge();
+  const text = getStatusText();
+
+  if (badge) {
+    badge.textContent = "오류";
+    badge.className = "status-badge error";
+  }
+
+  if (text) {
+    text.textContent =
+      "조건에 맞는 최신 공고를 찾지 못했습니다. 기업명이나 고용 형태 조건을 조금 넓혀 다시 시도해 주세요.";
+  }
+}
+
+function observeRenderedResult() {
+  const results = document.querySelector(".results");
+  if (!results) {
+    return;
+  }
+
+  const observer = new MutationObserver(() => {
+    reconcileRenderedResult();
+  });
+
+  observer.observe(results, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+
+  reconcileRenderedResult();
 }
 
 function enhanceValidationFeedback() {
-  const form = document.getElementById("analysisForm");
+  const form = getForm();
   if (!form || form.dataset.codexEnhanced === "true") {
     return;
   }
@@ -134,6 +288,8 @@ function enhanceValidationFeedback() {
   form.addEventListener("invalid", handleInvalidField, true);
   form.addEventListener("input", clearFieldError, true);
   form.addEventListener("change", clearFieldError, true);
+  form.addEventListener("submit", handleSubmitViewChange);
+  getEditButton()?.addEventListener("click", handleEdit);
 }
 
 async function loadLegacyApp() {
@@ -166,3 +322,5 @@ globalThis.fetch = function patchedFetch(input, init) {
 
 await loadLegacyApp();
 enhanceValidationFeedback();
+observeRenderedResult();
+setView("input", { instant: true });

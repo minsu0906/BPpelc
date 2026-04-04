@@ -50,6 +50,19 @@ a {
   padding: 28px 18px 48px;
 }
 
+body[data-view="input"] .page-shell {
+  max-width: 780px;
+}
+
+body[data-view="input"] .results {
+  display: none;
+}
+
+body[data-view="results"] .hero,
+body[data-view="results"] .form-panel {
+  display: none;
+}
+
 .hero {
   margin-bottom: 20px;
 }
@@ -222,6 +235,18 @@ textarea:focus {
   color: #ffffff;
 }
 
+.field.is-invalid input,
+.field.is-invalid select,
+.field.is-invalid textarea,
+.field.is-invalid .choice-pill span {
+  border-color: var(--error);
+  box-shadow: 0 0 0 4px rgba(150, 45, 45, 0.08);
+}
+
+.field.is-invalid > span {
+  color: var(--error);
+}
+
 .helper-card {
   padding: 16px 18px;
   border-radius: var(--radius-lg);
@@ -239,6 +264,20 @@ textarea:focus {
 .submit-row {
   display: flex;
   justify-content: flex-start;
+}
+
+.form-status {
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  font-size: 0.95rem;
+}
+
+.form-status.error {
+  border-color: rgba(150, 45, 45, 0.24);
+  background: #fbf3f3;
+  color: var(--error);
 }
 
 .primary-button {
@@ -262,6 +301,21 @@ textarea:focus {
   transform: none;
 }
 
+.secondary-button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.18s ease, transform 0.18s ease;
+}
+
+.secondary-button:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
 .is-hidden {
   display: none !important;
 }
@@ -272,6 +326,14 @@ textarea:focus {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 10px;
+}
+
+.results-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .status-badge {
@@ -509,7 +571,17 @@ textarea:focus {
     flex-direction: column;
   }
 
+  .results-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .primary-button {
     width: 100%;
+  }
+
+  .secondary-button {
+    width: 100%;
+    justify-content: center;
   }
 }

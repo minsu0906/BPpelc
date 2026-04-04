@@ -16,7 +16,7 @@
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
+  <body data-view="input">
     <div class="page-shell">
       <header class="hero">
         <p class="kicker">Job Notice Summary</p>
@@ -28,7 +28,7 @@
       </header>
 
       <main class="layout">
-        <section class="panel form-panel">
+        <section class="panel form-panel" id="formPanel">
           <div class="panel-top">
             <div>
               <p class="section-label">입력</p>
@@ -118,6 +118,8 @@
 
             <div id="modeHelper" class="helper-card span-2" aria-live="polite"></div>
 
+            <div id="formStatus" class="form-status span-2 is-hidden" aria-live="polite"></div>
+
             <div class="submit-row span-2">
               <button type="submit" class="primary-button" id="analyzeButton">
                 공고 기준 분석하기
@@ -132,7 +134,12 @@
               <p class="section-label">결과</p>
               <h2>공고 분석 결과</h2>
             </div>
-            <span id="statusBadge" class="status-badge">대기 중</span>
+            <div class="results-actions">
+              <button type="button" class="secondary-button" id="editButton">
+                조건 다시 입력
+              </button>
+              <span id="statusBadge" class="status-badge">대기 중</span>
+            </div>
           </div>
 
           <p id="statusText" class="status-text">
