@@ -4,6 +4,35 @@ const UNKNOWN_TEXT = "공고에서 명시 여부 확인 필요";
 const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
 const PDFJS_WORKER_URL =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+const TRUSTED_JOB_SOURCE_DOMAINS = [
+  "jobkorea.co.kr",
+  "saramin.co.kr",
+  "catch.co.kr",
+  "job.alio.go.kr",
+  "alio.go.kr",
+  "work24.go.kr",
+];
+const BLOCKED_GENERIC_SOURCE_DOMAINS = [
+  "naver.com",
+  "blog.naver.com",
+  "cafe.naver.com",
+  "post.naver.com",
+  "daum.net",
+  "brunch.co.kr",
+  "tistory.com",
+  "velog.io",
+  "namu.wiki",
+  "google.com",
+  "bing.com",
+  "linkedin.com",
+  "blind.co.kr",
+  "youtube.com",
+  "youtu.be",
+  "instagram.com",
+  "facebook.com",
+  "x.com",
+  "twitter.com",
+];
 
 let pdfjsLibPromise = null;
 let activeUploadedFileUrl = "";
@@ -181,7 +210,7 @@ function updateModeUI() {
       `
     : `
         <strong>최신 공고 1회</strong>
-        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
+        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 회사 공식 채용 페이지와 잡코리아, 사람인, 캐치, 잡알리오, 고용24만 허용합니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
         ${runtimeHint}
       `;
 
@@ -242,7 +271,8 @@ async function handleAnalyze(event) {
     if (mode === "latest") {
       const response = await requestLatestAnalysis(payload.apiKey, payload);
       const groundedSources = normalizeGroundedSources(
-        response?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? []
+        response?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [],
+        payload
       );
       const text = extractResponseText(response, { allowEmpty: true });
       const latestNotice = normalizeLatestNoticeResult(
@@ -251,14 +281,13 @@ async function handleAnalyze(event) {
         groundedSources
       );
 
-      sources = mergeLatestSources(groundedSources, latestNotice.source);
+      sources = mergeLatestSources(groundedSources, latestNotice.source, payload);
       analysisData = buildLatestFetchAnalysis(latestNotice.notice, sources, payload);
-      const hasFetchedNotice =
-        isMeaningfulUrl(sources[0]?.url) || isMeaningfulValue(latestNotice.notice.title);
+      const hasFetchedNotice = isMeaningfulUrl(sources[0]?.url);
 
       if (!hasFetchedNotice || isEffectivelyEmptyAnalysis(analysisData, sources)) {
         throw new Error(
-          "조건에 맞는 최신 공고 원문을 찾지 못했습니다. 기업명이나 고용 형태 조건을 조금 넓혀 다시 시도해 주세요."
+          "조건에 맞는 공신력 있는 공고 원문을 찾지 못했습니다. 회사 공식 채용 페이지나 잡코리아·사람인·캐치·잡알리오·고용24에 등록된 공고만 허용하고 있으니 조건을 조금 넓혀 다시 시도해 주세요."
         );
       }
     } else {
@@ -384,6 +413,7 @@ function buildLatestPrompt(payload) {
   const questionLine = payload.questionPrompt
     ? `- 질문 사항: ${payload.questionPrompt}`
     : "- 질문 사항: 없음";
+  const trustedSourcesLine = TRUSTED_JOB_SOURCE_DOMAINS.map((domain) => `  - ${domain}`).join("\n");
 
   return `
 당신은 한국 채용 공고 탐색 도우미다.
@@ -398,9 +428,14 @@ ${questionLine}
 반드시 지킬 규칙
 - 검색 결과 여러 건을 섞지 말고 가장 최신 공고 1건만 사용한다.
 - 상세 전형 분석은 하지 말고 notice와 source만 채운다.
+- 허용 출처는 아래 둘뿐이다.
+  - 회사 공식 채용 사이트 또는 회사 공식 공고 페이지
+${trustedSourcesLine}
+- 블로그, 카페, 커뮤니티, 뉴스 기사, 위키, 요약 페이지, 개인 게시물은 절대 사용하지 않는다.
 - source.url에는 실제 공고 원문 URL 또는 공식 채용 페이지 URL 1개를 반드시 넣는다.
 - source.title에는 링크 제목 또는 공고 제목을 넣는다.
 - source.note에는 왜 이 공고를 선택했는지 한 문장으로 적는다.
+- 허용 출처를 찾지 못하면 억지로 다른 사이트를 고르지 말고 source.url은 빈 문자열로 두고 관련 항목은 "미기재"로 적는다.
 - 공고에 없는 내용은 추정하지 말고 "${UNKNOWN_TEXT}" 또는 "미기재"라고 적는다.
 - summary는 이 공고가 어떤 채용인지 1~2문장으로 짧게 요약한다.
 - 출력은 설명 없이 JSON 객체 하나만 반환한다.
@@ -1090,7 +1125,7 @@ function buildLatestFetchAnalysis(notice, sources, payload) {
   });
 }
 
-function mergeLatestSources(groundedSources, preferredSource) {
+function mergeLatestSources(groundedSources, preferredSource, payload) {
   const seen = new Set();
 
   return [preferredSource, ...toArray(groundedSources)]
@@ -1100,6 +1135,7 @@ function mergeLatestSources(groundedSources, preferredSource) {
       note: asText(source?.note, ""),
     }))
     .filter((source) => isMeaningfulUrl(source.url))
+    .filter((source) => isTrustedLatestSource(source, payload))
     .filter((source) => {
       if (seen.has(source.url)) {
         return false;
@@ -1533,7 +1569,7 @@ function extractNoticeTitleFromText(text) {
   );
 }
 
-function normalizeGroundedSources(chunks) {
+function normalizeGroundedSources(chunks, payload) {
   const seen = new Set();
   return toArray(chunks)
     .map((chunk) => {
@@ -1545,6 +1581,7 @@ function normalizeGroundedSources(chunks) {
       };
     })
     .filter((item) => item.url)
+    .filter((item) => isTrustedLatestSource(item, payload))
     .filter((item) => {
       if (seen.has(item.url)) {
         return false;
@@ -1592,6 +1629,83 @@ function safeDomain(url) {
   } catch {
     return "source";
   }
+}
+
+function getHostname(url) {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function matchesDomainSuffix(hostname, suffix) {
+  return hostname === suffix || hostname.endsWith(`.${suffix}`);
+}
+
+function isTrustedJobSourceDomain(hostname) {
+  return TRUSTED_JOB_SOURCE_DOMAINS.some((domain) => matchesDomainSuffix(hostname, domain));
+}
+
+function isBlockedGenericSourceDomain(hostname) {
+  return BLOCKED_GENERIC_SOURCE_DOMAINS.some((domain) => matchesDomainSuffix(hostname, domain));
+}
+
+function normalizeLookupText(value) {
+  return asText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣]+/g, " ")
+    .trim();
+}
+
+function buildCompanyKeywords(companyName) {
+  const raw = asText(companyName).replace(/㈜|\(주\)|주식회사/g, " ");
+  const normalized = normalizeLookupText(raw);
+  const compact = normalized.replace(/\s+/g, "");
+  const withoutCorpSuffix = compact.replace(/유한회사|재단법인|사단법인/g, "");
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z0-9가-힣]/g, ""))
+    .filter((token) => token.length >= 2);
+
+  return [...new Set([compact, withoutCorpSuffix, ...tokens].filter((token) => token.length >= 2))];
+}
+
+function isLikelyOfficialCompanySource(source, payload) {
+  const url = asText(source?.url);
+  const hostname = getHostname(url);
+
+  if (!hostname || isBlockedGenericSourceDomain(hostname) || isTrustedJobSourceDomain(hostname)) {
+    return false;
+  }
+
+  const keywords = buildCompanyKeywords(payload?.companyName);
+  if (!keywords.length) {
+    return false;
+  }
+
+  const searchableText = normalizeLookupText(
+    [hostname, source?.title, source?.note].filter(Boolean).join(" ")
+  );
+  const hasCompanyMatch = keywords.some((keyword) => searchableText.includes(keyword));
+  const hasRecruitCueInTitle = /채용|모집|공고|recruit|career|careers|job|jobs|employment|hiring/i.test(
+    asText(source?.title)
+  );
+  const hasRecruitCueInUrl = /채용|recruit|career|careers|job|jobs|employment|hiring|talent|apply/i.test(
+    url
+  );
+
+  return hasCompanyMatch && hasRecruitCueInTitle && hasRecruitCueInUrl;
+}
+
+function isTrustedLatestSource(source, payload) {
+  const hostname = getHostname(source?.url);
+
+  if (!hostname || isBlockedGenericSourceDomain(hostname)) {
+    return false;
+  }
+
+  return isTrustedJobSourceDomain(hostname) || isLikelyOfficialCompanySource(source, payload);
 }
 
 function toArray(value) {
