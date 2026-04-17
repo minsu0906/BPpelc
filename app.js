@@ -210,7 +210,7 @@ function updateModeUI() {
       `
     : `
         <strong>최신 공고 1회</strong>
-        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 회사 공식 채용 페이지와 잡코리아, 사람인, 캐치, 잡알리오, 고용24만 허용하며, 원문 PDF가 있으면 기준 파일 카드로도 붙입니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
+        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 회사 공식 채용 페이지와 잡코리아, 사람인, 캐치, 잡알리오, 고용24만 허용하며, 원문 PDF가 있으면 기준 파일 카드로 바꿔 보여줍니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
         ${runtimeHint}
       `;
 
@@ -1074,7 +1074,7 @@ async function enrichLatestSourcesWithPdfFiles(sources) {
   const [primarySource, ...restSources] = sourceList;
   const pdfSource = await tryBuildRemotePdfSource(primarySource);
 
-  return pdfSource ? [pdfSource, primarySource, ...restSources] : sourceList;
+  return pdfSource ? [pdfSource, ...restSources] : sourceList;
 }
 
 async function tryBuildRemotePdfSource(source) {
@@ -1083,8 +1083,30 @@ async function tryBuildRemotePdfSource(source) {
     return null;
   }
 
+  const directPdfSource = await tryFetchPdfSource(sourceUrl, source);
+  if (directPdfSource) {
+    return directPdfSource;
+  }
+
+  const html = await tryFetchHtmlText(sourceUrl);
+  if (!html) {
+    return null;
+  }
+
+  const pdfCandidates = extractPdfCandidatesFromHtml(html, sourceUrl);
+  for (const candidate of pdfCandidates) {
+    const pdfSource = await tryFetchPdfSource(candidate.url, source, candidate.label);
+    if (pdfSource) {
+      return pdfSource;
+    }
+  }
+
+  return null;
+}
+
+async function tryFetchPdfSource(url, source, candidateLabel = "") {
   try {
-    const response = await fetch(sourceUrl, {
+    const response = await fetch(url, {
       headers: {
         Accept: "application/pdf,application/octet-stream;q=0.9,*/*;q=0.1",
       },
@@ -1095,31 +1117,122 @@ async function tryBuildRemotePdfSource(source) {
     }
 
     const contentType = asText(response.headers.get("content-type")).toLowerCase();
-    if (contentType && !contentType.includes("application/pdf") && !looksLikePdfUrl(sourceUrl)) {
+    if (contentType && !contentType.includes("application/pdf") && !looksLikePdfUrl(url)) {
       return null;
     }
 
     const buffer = await response.arrayBuffer();
     const isPdf =
       contentType.includes("application/pdf") ||
-      looksLikePdfUrl(sourceUrl) ||
+      looksLikePdfUrl(url) ||
       looksLikePdfBuffer(buffer);
 
     if (!isPdf) {
       return null;
     }
 
-    const pdfBlob = new Blob([buffer], { type: "application/pdf" });
+    const fileName = resolveRemotePdfFileName(response, url, source, candidateLabel);
+    const pdfFile =
+      typeof File === "function"
+        ? new File([buffer], fileName, { type: "application/pdf" })
+        : new Blob([buffer], { type: "application/pdf" });
 
     return {
-      title: buildRemotePdfTitle(source),
-      note: "원문 PDF를 받아 기준 파일로 연결했습니다.",
-      url: createTrackedObjectUrl(pdfBlob),
+      title: fileName,
+      note: buildRemotePdfNote(source),
+      url: createTrackedObjectUrl(pdfFile),
       linkLabel: "PDF 파일 열기",
     };
   } catch {
     return null;
   }
+}
+
+async function tryFetchHtmlText(url) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
+      },
+    });
+
+    if (!response.ok) {
+      return "";
+    }
+
+    const contentType = asText(response.headers.get("content-type")).toLowerCase();
+    if (contentType.includes("application/pdf")) {
+      return "";
+    }
+
+    return response.text();
+  } catch {
+    return "";
+  }
+}
+
+function extractPdfCandidatesFromHtml(html, pageUrl) {
+  const candidates = [];
+  const seen = new Set();
+  const parser = new DOMParser();
+  const document = parser.parseFromString(html, "text/html");
+
+  const pushCandidate = (rawUrl, label = "") => {
+    const resolvedUrl = resolveRelativeUrl(rawUrl, pageUrl);
+    if (!isMeaningfulUrl(resolvedUrl)) {
+      return;
+    }
+
+    const cueText = `${rawUrl} ${label} ${resolvedUrl}`.trim();
+    if (!looksLikePdfUrl(resolvedUrl) && !hasPdfCueText(cueText)) {
+      return;
+    }
+
+    if (seen.has(resolvedUrl)) {
+      return;
+    }
+
+    seen.add(resolvedUrl);
+    candidates.push({
+      url: resolvedUrl,
+      label: String(label ?? "").replace(/\s+/g, " ").trim(),
+      score: scorePdfCandidate(resolvedUrl, cueText),
+    });
+  };
+
+  document.querySelectorAll("a[href]").forEach((anchor) => {
+    pushCandidate(anchor.getAttribute("href"), [
+      anchor.textContent,
+      anchor.getAttribute("title"),
+      anchor.getAttribute("download"),
+      anchor.getAttribute("aria-label"),
+    ].filter(Boolean).join(" "));
+  });
+
+  document.querySelectorAll("iframe[src], embed[src]").forEach((element) => {
+    pushCandidate(
+      element.getAttribute("src"),
+      [element.getAttribute("title"), element.getAttribute("aria-label"), "pdf"].filter(Boolean).join(" ")
+    );
+  });
+
+  document.querySelectorAll("object[data]").forEach((element) => {
+    pushCandidate(
+      element.getAttribute("data"),
+      [element.getAttribute("title"), element.getAttribute("aria-label"), element.getAttribute("type"), "pdf"]
+        .filter(Boolean)
+        .join(" ")
+    );
+  });
+
+  Array.from(html.matchAll(/["']([^"'<>]*?\.pdf(?:[?#][^"'<>]*)?)["']/gi)).forEach((match) => {
+    pushCandidate(match[1], "pdf");
+  });
+
+  return candidates
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 8)
+    .map(({ url, label }) => ({ url, label }));
 }
 
 function looksLikePdfUrl(url) {
@@ -1142,6 +1255,107 @@ function buildRemotePdfTitle(source) {
   const sanitized = rawTitle.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
   const baseName = sanitized ? sanitized.replace(/\.pdf$/i, "").trim() : "채용공고";
   return `${baseName || "채용공고"}.pdf`;
+}
+
+function buildRemotePdfNote(source) {
+  const sourceTitle = asText(source?.title, "원문 페이지");
+  return `${sourceTitle}에서 PDF 원문을 받아 기준 파일로 연결했습니다.`;
+}
+
+function resolveRelativeUrl(rawUrl, baseUrl) {
+  const trimmed = asText(rawUrl);
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    return new URL(trimmed, baseUrl).toString();
+  } catch {
+    return "";
+  }
+}
+
+function hasPdfCueText(text) {
+  return /pdf|첨부|붙임|파일|다운로드|공고문|모집요강|채용공고|입사지원|원문/i.test(asText(text));
+}
+
+function scorePdfCandidate(url, cueText) {
+  let score = 0;
+
+  if (looksLikePdfUrl(url)) {
+    score += 10;
+  }
+
+  if (/\.pdf/i.test(asText(cueText))) {
+    score += 6;
+  }
+
+  if (/첨부|붙임|공고문|모집요강|다운로드/i.test(asText(cueText))) {
+    score += 4;
+  }
+
+  if (/pdf/i.test(asText(cueText))) {
+    score += 2;
+  }
+
+  return score;
+}
+
+function resolveRemotePdfFileName(response, url, source, candidateLabel = "") {
+  const contentDisposition = asText(response.headers.get("content-disposition"));
+  const headerName = extractFilenameFromContentDisposition(contentDisposition);
+  if (headerName) {
+    return ensurePdfFileName(headerName);
+  }
+
+  const candidateName = buildCandidatePdfName(candidateLabel || url);
+  if (candidateName) {
+    return ensurePdfFileName(candidateName);
+  }
+
+  return buildRemotePdfTitle(source);
+}
+
+function extractFilenameFromContentDisposition(headerValue) {
+  const encodedMatch = headerValue.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (encodedMatch) {
+    try {
+      return decodeURIComponent(encodedMatch[1]).replace(/^["']|["']$/g, "");
+    } catch {
+      return encodedMatch[1].replace(/^["']|["']$/g, "");
+    }
+  }
+
+  const plainMatch = headerValue.match(/filename\s*=\s*("?)([^";]+)\1/i);
+  return plainMatch ? plainMatch[2].trim() : "";
+}
+
+function buildCandidatePdfName(value) {
+  const text = asText(value);
+  const directMatch = text.match(/[^\\/:*?"<>|\s]+\.pdf(?:$|[?#])/i);
+  if (directMatch) {
+    return directMatch[0].replace(/[?#].*$/g, "");
+  }
+
+  const sanitized = text.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  return sanitized ? sanitized.slice(0, 80) : "";
+}
+
+function ensurePdfFileName(name) {
+  const sanitized = asText(name)
+    .replace(/[\\/:*?"<>|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!sanitized) {
+    return "채용공고.pdf";
+  }
+
+  if (/\.pdf$/i.test(sanitized)) {
+    return sanitized;
+  }
+
+  const withoutBarePdf = sanitized.replace(/\bpdf\b$/i, "").trim();
+  return `${withoutBarePdf || sanitized}.pdf`;
 }
 
 function normalizeLatestNoticeResult(raw, payload, groundedSources = []) {
