@@ -35,7 +35,7 @@ const BLOCKED_GENERIC_SOURCE_DOMAINS = [
 ];
 
 let pdfjsLibPromise = null;
-let activeUploadedFileUrl = "";
+let activeObjectUrls = [];
 
 const LATEST_NOTICE_SCHEMA = {
   type: "object",
@@ -127,7 +127,7 @@ function initialize() {
   elements.form.addEventListener("change", clearFieldError);
   elements.form.addEventListener("submit", handleAnalyze);
   elements.editButton.addEventListener("click", handleEdit);
-  window.addEventListener("beforeunload", releaseUploadedFileUrl);
+  window.addEventListener("beforeunload", releaseObjectUrls);
 }
 
 function getSelectedValue(name) {
@@ -210,7 +210,7 @@ function updateModeUI() {
       `
     : `
         <strong>최신 공고 1회</strong>
-        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 회사 공식 채용 페이지와 잡코리아, 사람인, 캐치, 잡알리오, 고용24만 허용합니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
+        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 회사 공식 채용 페이지와 잡코리아, 사람인, 캐치, 잡알리오, 고용24만 허용하며, 원문 PDF가 있으면 기준 파일 카드로도 붙입니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
         ${runtimeHint}
       `;
 
@@ -251,7 +251,7 @@ async function handleAnalyze(event) {
     localStorage.setItem(STORAGE_KEY, payload.apiKey);
   }
 
-  releaseUploadedFileUrl();
+  releaseObjectUrls();
   showResultsView();
   setBusy(true);
   setStatus(
@@ -290,6 +290,8 @@ async function handleAnalyze(event) {
           "조건에 맞는 공신력 있는 공고 원문을 찾지 못했습니다. 회사 공식 채용 페이지나 잡코리아·사람인·캐치·잡알리오·고용24에 등록된 공고만 허용하고 있으니 조건을 조금 넓혀 다시 시도해 주세요."
         );
       }
+
+      sources = await enrichLatestSourcesWithPdfFiles(sources);
     } else {
       const file = elements.noticeFile.files[0];
       const extractedText = await extractPdfText(file);
@@ -358,7 +360,7 @@ function getFieldLabel(element) {
 }
 
 function handleEdit() {
-  releaseUploadedFileUrl();
+  releaseObjectUrls();
   showInputView();
   clearFormStatus();
   elements.companyName.focus();
@@ -432,6 +434,7 @@ ${questionLine}
   - 회사 공식 채용 사이트 또는 회사 공식 공고 페이지
 ${trustedSourcesLine}
 - 블로그, 카페, 커뮤니티, 뉴스 기사, 위키, 요약 페이지, 개인 게시물은 절대 사용하지 않는다.
+- 같은 공고에서 HTML 페이지와 PDF 원문이 함께 보이면 PDF 원문 URL을 우선한다.
 - source.url에는 실제 공고 원문 URL 또는 공식 채용 페이지 URL 1개를 반드시 넣는다.
 - source.title에는 링크 제목 또는 공고 제목을 넣는다.
 - source.note에는 왜 이 공고를 선택했는지 한 문장으로 적는다.
@@ -1038,25 +1041,107 @@ function isPdfFile(file) {
   return file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name));
 }
 
-function releaseUploadedFileUrl() {
-  if (!activeUploadedFileUrl) {
+function releaseObjectUrls() {
+  if (!activeObjectUrls.length) {
     return;
   }
 
-  URL.revokeObjectURL(activeUploadedFileUrl);
-  activeUploadedFileUrl = "";
+  activeObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+  activeObjectUrls = [];
+}
+
+function createTrackedObjectUrl(resource) {
+  const url = URL.createObjectURL(resource);
+  activeObjectUrls.push(url);
+  return url;
 }
 
 function buildUploadedFileSource(file) {
-  releaseUploadedFileUrl();
-  activeUploadedFileUrl = URL.createObjectURL(file);
-
   return {
     title: file.name,
     note: "업로드한 PDF를 기준 파일로 사용했습니다.",
-    url: activeUploadedFileUrl,
+    url: createTrackedObjectUrl(file),
     linkLabel: "파일 열기",
   };
+}
+
+async function enrichLatestSourcesWithPdfFiles(sources) {
+  const sourceList = toArray(sources);
+  if (!sourceList.length) {
+    return sourceList;
+  }
+
+  const [primarySource, ...restSources] = sourceList;
+  const pdfSource = await tryBuildRemotePdfSource(primarySource);
+
+  return pdfSource ? [pdfSource, primarySource, ...restSources] : sourceList;
+}
+
+async function tryBuildRemotePdfSource(source) {
+  const sourceUrl = asText(source?.url);
+  if (!isMeaningfulUrl(sourceUrl)) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(sourceUrl, {
+      headers: {
+        Accept: "application/pdf,application/octet-stream;q=0.9,*/*;q=0.1",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const contentType = asText(response.headers.get("content-type")).toLowerCase();
+    if (contentType && !contentType.includes("application/pdf") && !looksLikePdfUrl(sourceUrl)) {
+      return null;
+    }
+
+    const buffer = await response.arrayBuffer();
+    const isPdf =
+      contentType.includes("application/pdf") ||
+      looksLikePdfUrl(sourceUrl) ||
+      looksLikePdfBuffer(buffer);
+
+    if (!isPdf) {
+      return null;
+    }
+
+    const pdfBlob = new Blob([buffer], { type: "application/pdf" });
+
+    return {
+      title: buildRemotePdfTitle(source),
+      note: "원문 PDF를 받아 기준 파일로 연결했습니다.",
+      url: createTrackedObjectUrl(pdfBlob),
+      linkLabel: "PDF 파일 열기",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function looksLikePdfUrl(url) {
+  return /\.pdf(?:$|[?#])/i.test(asText(url)) || /format=pdf|download=pdf|file=pdf/i.test(asText(url));
+}
+
+function looksLikePdfBuffer(buffer) {
+  const bytes = new Uint8Array(buffer).slice(0, 5);
+  return (
+    bytes.length >= 4 &&
+    bytes[0] === 0x25 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x44 &&
+    bytes[3] === 0x46
+  );
+}
+
+function buildRemotePdfTitle(source) {
+  const rawTitle = asText(source?.title, safeDomain(source?.url));
+  const sanitized = rawTitle.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  const baseName = sanitized ? sanitized.replace(/\.pdf$/i, "").trim() : "채용공고";
+  return `${baseName || "채용공고"}.pdf`;
 }
 
 function normalizeLatestNoticeResult(raw, payload, groundedSources = []) {
