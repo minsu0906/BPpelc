@@ -210,7 +210,7 @@ function updateModeUI() {
       `
     : `
         <strong>최신 공고 1회</strong>
-        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 회사 공식 채용 페이지와 잡코리아, 사람인, 캐치, 잡알리오, 고용24만 허용하며, 원문 PDF가 있으면 기준 파일 카드로 바꿔 보여줍니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
+        Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 회사 공식 채용 페이지와 잡코리아, 사람인, 캐치, 잡알리오, 고용24만 허용하며, 원문을 직접 읽을 수 있으면 전형 단계와 가점 항목까지 함께 정리합니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
         ${runtimeHint}
       `;
 
@@ -258,7 +258,7 @@ async function handleAnalyze(event) {
     "loading",
     "분석 중",
     mode === "latest"
-      ? "최신 공고 1건을 찾고 있으며, 공고 원문과 기본 정보만 먼저 가져오고 있습니다."
+      ? "최신 공고 1건을 찾고 있으며, 공고 원문을 직접 읽어 전형과 가점을 정리하고 있습니다."
       : "업로드한 PDF를 브라우저에서 직접 읽고 채용 정보를 정리하고 있습니다."
   );
   renderLoadingState();
@@ -282,16 +282,16 @@ async function handleAnalyze(event) {
       );
 
       sources = mergeLatestSources(groundedSources, latestNotice.source, payload);
-      analysisData = buildLatestFetchAnalysis(latestNotice.notice, sources, payload);
-      const hasFetchedNotice = isMeaningfulUrl(sources[0]?.url);
+      const hasFetchedNotice = sources.length > 0;
+      const latestResult = await buildLatestFetchAnalysis(latestNotice.notice, sources, payload);
+      analysisData = latestResult.analysis;
+      sources = latestResult.sources;
 
       if (!hasFetchedNotice || isEffectivelyEmptyAnalysis(analysisData, sources)) {
         throw new Error(
           "조건에 맞는 공신력 있는 공고 원문을 찾지 못했습니다. 회사 공식 채용 페이지나 잡코리아·사람인·캐치·잡알리오·고용24에 등록된 공고만 허용하고 있으니 조건을 조금 넓혀 다시 시도해 주세요."
         );
       }
-
-      sources = await enrichLatestSourcesWithPdfFiles(sources);
     } else {
       const file = elements.noticeFile.files[0];
       const extractedText = await extractPdfText(file);
@@ -304,7 +304,9 @@ async function handleAnalyze(event) {
       "success",
       "완료",
       mode === "latest"
-        ? "최신 공고 1건을 가져왔습니다. 상세 분석은 잠시 비워두고 공고 원문부터 보여주고 있습니다."
+        ? hasDetailedAnalysisData(analysisData)
+          ? "최신 공고 1건을 가져와 원문 기반으로 전형과 가점을 함께 정리했습니다."
+          : "최신 공고 1건을 가져왔지만 원문 직접 읽기에 제한이 있어 기본 정보 중심으로 정리했습니다."
         : "업로드한 공고를 API 키 없이 바로 정리했습니다."
     );
   } catch (error) {
@@ -683,10 +685,17 @@ function buildLocalInformation(text, lines, payload, notice, fileName) {
 function buildLocalProcess(text, lines) {
   const stages = extractStageSegments(lines);
   if (!stages.length) {
+    const processText = extractSectionText(lines, ["전형절차", "채용절차"], 8) || text;
+    const inferredStages = extractProcessSequence(processText);
+
+    if (inferredStages.length) {
+      return inferredStages.map((stageName) => buildStageCard(stageName, processText));
+    }
+
     return [
       buildStageCard(
         "채용 절차",
-        extractSectionText(lines, ["전형절차", "채용절차"], 8) || text
+        processText
       ),
     ];
   }
@@ -714,23 +723,29 @@ function buildLocalBonus(text, lines) {
   const configs = [
     {
       category: "법정 가점",
-      keywords: ["가점", "취업지원대상자", "보훈", "국가유공자", "장애인"],
+      keywords: ["가점", "취업지원대상자", "보훈", "국가유공자", "의사상자"],
     },
     {
-      category: "자격증/면허",
-      keywords: ["자격증", "면허", "기사", "산업기사", "기능사", "기술사", "한국사"],
+      category: "사회형평 우대",
+      keywords: ["장애인", "사회형평", "기초생활수급", "저소득", "한부모", "다문화", "북한이탈", "자립준비"],
     },
     {
-      category: "우대 사항",
-      keywords: ["우대사항", "우대", "사회형평", "어학", "경력", "경험"],
+      category: "자격/어학 우대",
+      keywords: ["자격증", "면허", "기사", "산업기사", "기능사", "기술사", "한국사", "어학", "toeic", "toefl", "opic"],
+    },
+    {
+      category: "경험/지역 우대",
+      keywords: ["우대사항", "우대", "경력", "경험", "청년인턴", "이전지역인재", "지역인재", "인턴 수료"],
     },
   ];
 
   const cards = configs
     .map((config) => {
-      const linesForCategory = uniqueTexts(
-        lines.filter((line) => config.keywords.some((keyword) => line.includes(keyword))).slice(0, 5)
-      );
+      const linesForCategory = collectContextSegments(lines, config.keywords, {
+        before: 1,
+        after: 2,
+        limit: 4,
+      });
 
       if (!linesForCategory.length) {
         return null;
@@ -865,13 +880,37 @@ function normalizeStageName(line) {
   }
 
   const named = cleaned.match(
-    /^(서류전형|필기시험|인성검사|직무면접|실무면접|종합면접|최종면접|AI면접|최종전형)$/
+    /^(서류전형|서류심사|서류평가|필기시험|필기전형|인성검사|직무면접|실무면접|역량면접|인성면접|종합면접|토론면접|PT면접|최종면접|AI면접|실기시험|체력검정|최종전형)$/
   );
   if (named) {
     return named[1];
   }
 
   return "";
+}
+
+function extractProcessSequence(text) {
+  const stageNames = [
+    "서류전형",
+    "서류심사",
+    "서류평가",
+    "필기시험",
+    "필기전형",
+    "인성검사",
+    "직무면접",
+    "실무면접",
+    "역량면접",
+    "인성면접",
+    "토론면접",
+    "PT면접",
+    "최종면접",
+    "AI면접",
+    "실기시험",
+    "체력검정",
+    "최종전형",
+  ];
+
+  return stageNames.filter((stageName) => text.includes(stageName));
 }
 
 function extractSchedule(segmentText) {
@@ -902,10 +941,11 @@ function extractEvaluationItems(segmentText, stageName) {
   }
 
   const inferred = [];
-  const stageKeywords =
-    /필기/.test(stageName)
+  const stageKeywords = /서류/.test(stageName)
+    ? ["교육", "자격", "경력", "경험", "자기소개서", "직무적합성"]
+    : /필기/.test(stageName)
       ? ["NCS", "직업기초능력", "직무수행능력", "전공", "한국사", "인성"]
-      : ["직무역량", "조직적합성", "의사소통", "인성", "문제해결", "직업윤리"];
+      : ["직무역량", "조직적합성", "의사소통", "인성", "문제해결", "직업윤리", "상황대처"];
 
   stageKeywords.forEach((keyword) => {
     if (segmentText.includes(keyword)) {
@@ -996,6 +1036,29 @@ function splitToItems(text) {
     .filter(Boolean);
 
   return uniqueTexts(items).slice(0, 5);
+}
+
+function collectContextSegments(lines, keywords, options = {}) {
+  const before = Number(options.before ?? 0);
+  const after = Number(options.after ?? 2);
+  const limit = Number(options.limit ?? 4);
+  const segments = [];
+
+  lines.forEach((line, index) => {
+    if (!keywords.some((keyword) => line.includes(keyword))) {
+      return;
+    }
+
+    const startIndex = Math.max(0, index - before);
+    const endIndex = Math.min(lines.length, index + after + 1);
+    const segment = trimSummary(lines.slice(startIndex, endIndex).join(" "), 240);
+
+    if (segment) {
+      segments.push(segment);
+    }
+  });
+
+  return uniqueTexts(segments).slice(0, limit);
 }
 
 function dedupeInformation(items) {
@@ -1142,6 +1205,8 @@ async function tryFetchPdfSource(url, source, candidateLabel = "") {
       note: buildRemotePdfNote(source),
       url: createTrackedObjectUrl(pdfFile),
       linkLabel: "PDF 파일 열기",
+      file: pdfFile,
+      fileName,
     };
   } catch {
     return null;
@@ -1377,7 +1442,7 @@ function normalizeLatestNoticeResult(raw, payload, groundedSources = []) {
       applicationPeriod: asText(notice.applicationPeriod, "미기재"),
       summary: asText(
         notice.summary,
-        "최신 공고 원문을 찾았습니다. 상세 전형 분석과 가점 분석은 아직 생략하고 있습니다."
+        "최신 공고 원문을 찾았습니다. 원문 기반으로 전형과 가점을 이어서 정리합니다."
       ),
     },
     source: {
@@ -1388,40 +1453,402 @@ function normalizeLatestNoticeResult(raw, payload, groundedSources = []) {
   };
 }
 
-function buildLatestFetchAnalysis(notice, sources, payload) {
-  const primarySource = toArray(sources)[0] ?? {};
-  const information = dedupeInformation([
-    { label: "지원 학력", value: notice.educationLevel || payload.educationLevel },
-    { label: "고용 형태", value: notice.employmentType || payload.employmentType || "미기재" },
-    { label: "모집 인원", value: notice.headcount },
-    { label: "접수 기간", value: notice.applicationPeriod },
-    isMeaningfulUrl(primarySource.url)
-      ? {
-          label: "원문 링크",
-          value: asText(primarySource.title, safeDomain(primarySource.url)),
-        }
-      : null,
-    {
-      label: "상세 분석",
-      value: "공고 원문 확인 완료. 전형/가점 분석은 아직 생략했습니다.",
-    },
-  ]);
+async function buildLatestFetchAnalysis(notice, sources, payload) {
+  const latestDetail = await collectLatestSourceDetails(sources);
+  const detailedAnalysis = latestDetail.detail?.text
+    ? analyzeUploadedNotice(
+        latestDetail.detail.text,
+        payload,
+        latestDetail.detail.sourceType === "pdf" ? latestDetail.detail.fileName : ""
+      )
+    : null;
+  const referenceSource = latestDetail.referenceSource ?? {};
+  const information = mergeInformationItems(
+    [
+      { label: "지원 학력", value: pickMeaningfulText(notice.educationLevel, payload.educationLevel, "미기재") },
+      {
+        label: "고용 형태",
+        value: pickMeaningfulText(
+          notice.employmentType,
+          detailedAnalysis?.notice?.employmentType,
+          payload.employmentType,
+          "미기재"
+        ),
+      },
+      {
+        label: "모집 인원",
+        value: pickMeaningfulText(notice.headcount, detailedAnalysis?.notice?.headcount, "미기재"),
+      },
+      {
+        label: "접수 기간",
+        value: pickMeaningfulText(
+          notice.applicationPeriod,
+          detailedAnalysis?.notice?.applicationPeriod,
+          "미기재"
+        ),
+      },
+      isMeaningfulUrl(referenceSource.url)
+        ? {
+            label: "원문 링크",
+            value: asText(referenceSource.title, safeDomain(referenceSource.url)),
+          }
+        : null,
+      {
+        label: "상세 분석",
+        value: buildLatestDetailMessage(latestDetail.detail, detailedAnalysis),
+      },
+    ],
+    toArray(detailedAnalysis?.information)
+  ).slice(0, 10);
 
-  return normalizeAnalysisData({
-    notice: {
-      organization: notice.organization,
-      title: notice.title,
-      noticeDate: notice.noticeDate,
-      educationLevel: notice.educationLevel,
-      employmentType: notice.employmentType,
-      headcount: notice.headcount,
-      applicationPeriod: notice.applicationPeriod,
-      summary: notice.summary,
+  return {
+    analysis: normalizeAnalysisData({
+      notice: {
+        organization: pickMeaningfulText(
+          notice.organization,
+          detailedAnalysis?.notice?.organization,
+          payload.companyName,
+          "기업명 미기재"
+        ),
+        title: pickMeaningfulText(notice.title, detailedAnalysis?.notice?.title, "공고 제목 미기재"),
+        noticeDate: pickMeaningfulText(notice.noticeDate, detailedAnalysis?.notice?.noticeDate, "미기재"),
+        educationLevel: pickMeaningfulText(
+          notice.educationLevel,
+          detailedAnalysis?.notice?.educationLevel,
+          payload.educationLevel,
+          "미기재"
+        ),
+        employmentType: pickMeaningfulText(
+          notice.employmentType,
+          detailedAnalysis?.notice?.employmentType,
+          payload.employmentType,
+          "미기재"
+        ),
+        headcount: pickMeaningfulText(notice.headcount, detailedAnalysis?.notice?.headcount, "미기재"),
+        applicationPeriod: pickMeaningfulText(
+          notice.applicationPeriod,
+          detailedAnalysis?.notice?.applicationPeriod,
+          "미기재"
+        ),
+        summary: buildLatestNoticeSummary(notice.summary, latestDetail.detail, detailedAnalysis),
+      },
+      information,
+      process: toArray(detailedAnalysis?.process),
+      bonusPoints: toArray(detailedAnalysis?.bonusPoints),
+    }),
+    sources: latestDetail.sources,
+  };
+}
+
+async function collectLatestSourceDetails(sources) {
+  const sourceList = toArray(sources);
+  if (!sourceList.length) {
+    return {
+      sources: sourceList,
+      referenceSource: null,
+      detail: null,
+    };
+  }
+
+  const [primarySource, ...restSources] = sourceList;
+  const detail = await extractLatestSourceDetail(primarySource);
+
+  return {
+    sources: mergeSourceCards(
+      detail?.displaySource ? [detail.displaySource] : [],
+      [primarySource],
+      restSources
+    ),
+    referenceSource: primarySource,
+    detail,
+  };
+}
+
+async function extractLatestSourceDetail(source) {
+  const sourceUrl = asText(source?.url);
+  if (!isMeaningfulUrl(sourceUrl)) {
+    return null;
+  }
+
+  const directPdfSource = await tryFetchPdfSource(sourceUrl, source);
+  if (directPdfSource) {
+    return buildLatestPdfDetail(directPdfSource);
+  }
+
+  const html = await tryFetchHtmlText(sourceUrl);
+  if (!html) {
+    return null;
+  }
+
+  const pdfCandidates = extractPdfCandidatesFromHtml(html, sourceUrl);
+  for (const candidate of pdfCandidates) {
+    const pdfSource = await tryFetchPdfSource(candidate.url, source, candidate.label);
+    if (pdfSource) {
+      return buildLatestPdfDetail(pdfSource);
+    }
+  }
+
+  const htmlText = extractReadableTextFromHtml(html);
+  if (!looksLikeDetailedNoticeText(htmlText)) {
+    return null;
+  }
+
+  return {
+    sourceType: "html",
+    text: htmlText,
+    fileName: "",
+    displaySource: {
+      title: asText(source?.title, "공고 원문"),
+      note: buildRemoteHtmlAnalysisNote(source),
+      url: sourceUrl,
+      linkLabel: "원문 보기",
     },
-    information,
-    process: [],
-    bonusPoints: [],
+  };
+}
+
+async function buildLatestPdfDetail(pdfSource) {
+  let text = "";
+
+  try {
+    if (typeof pdfSource?.file?.arrayBuffer === "function") {
+      text = await extractPdfText(pdfSource.file);
+    }
+  } catch {
+    text = "";
+  }
+
+  return {
+    sourceType: "pdf",
+    text,
+    fileName: asText(pdfSource?.fileName, asText(pdfSource?.title, "채용공고.pdf")),
+    displaySource: {
+      title: asText(pdfSource?.title, "채용공고.pdf"),
+      note: asText(pdfSource?.note, "원문 PDF를 기준 자료로 연결했습니다."),
+      url: asText(pdfSource?.url),
+      linkLabel: asText(pdfSource?.linkLabel, "PDF 파일 열기"),
+    },
+  };
+}
+
+function extractReadableTextFromHtml(html) {
+  const parser = new DOMParser();
+  const document = parser.parseFromString(html, "text/html");
+
+  document
+    .querySelectorAll("script, style, noscript, template, svg, iframe, canvas")
+    .forEach((element) => element.remove());
+
+  const root = pickLatestHtmlRoot(document) ?? document.body;
+  const preferredText = normalizeHtmlDetailText(root?.innerText || root?.textContent || "");
+
+  if (looksLikeDetailedNoticeText(preferredText)) {
+    return preferredText;
+  }
+
+  return normalizeHtmlDetailText(document.body?.innerText || document.body?.textContent || "");
+}
+
+function pickLatestHtmlRoot(document) {
+  const selectors = [
+    "main",
+    "article",
+    "[role='main']",
+    "#content",
+    "#contents",
+    ".content",
+    ".contents",
+    ".detail",
+    ".view",
+    ".view-area",
+    ".board-view",
+    ".recruit",
+    ".notice",
+    ".container",
+  ];
+  const candidates = [document.body, ...selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)))];
+  const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
+
+  return uniqueCandidates
+    .map((element) => ({
+      element,
+      score: scoreLatestHtmlRoot(element),
+    }))
+    .sort((left, right) => right.score - left.score)[0]?.element ?? null;
+}
+
+function scoreLatestHtmlRoot(element) {
+  const text = normalizeHtmlDetailText(element?.innerText || element?.textContent || "");
+  if (!text) {
+    return -1;
+  }
+
+  const keywordCount =
+    text.match(/채용|모집|지원|전형|서류|필기|면접|접수|우대|가점|직무|NCS|시험/gi)?.length ?? 0;
+  const tableCount = element.querySelectorAll("table").length;
+  const headingCount = element.querySelectorAll("h1, h2, h3").length;
+  const linkCount = element.querySelectorAll("a").length;
+
+  return Math.min(text.length, 14000) + keywordCount * 180 + tableCount * 260 + headingCount * 120 - linkCount * 16;
+}
+
+function normalizeHtmlDetailText(text) {
+  return String(text ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function looksLikeDetailedNoticeText(text) {
+  const normalized = asText(text);
+  const compactLength = normalized.replace(/\s+/g, "").length;
+  const keywordCount =
+    normalized.match(/채용|모집|지원|전형|서류|필기|면접|접수|우대|가점|직무|NCS|시험/gi)?.length ?? 0;
+
+  return compactLength >= 120 && keywordCount >= 2;
+}
+
+function buildRemoteHtmlAnalysisNote(source) {
+  const sourceTitle = asText(source?.title, "원문 페이지");
+  return `${sourceTitle} 페이지 본문을 직접 읽어 상세 분석했습니다.`;
+}
+
+function buildLatestDetailMessage(detail, analysisData) {
+  if (!detail) {
+    return "공고 원문 링크는 확인했지만 브라우저에서 본문을 직접 읽지 못해 기본 정보 중심으로 정리했습니다.";
+  }
+
+  if (!asText(detail.text)) {
+    return detail.sourceType === "pdf"
+      ? "PDF 원문은 확보했지만 브라우저에서 텍스트를 충분히 읽지 못해 기본 정보 중심으로 정리했습니다."
+      : "공고 페이지 본문을 열었지만 상세 분석에 쓸 텍스트를 충분히 추출하지 못했습니다.";
+  }
+
+  const stageCount = countMeaningfulProcessStages(analysisData?.process);
+  const bonusCount = countMeaningfulBonusItems(analysisData?.bonusPoints);
+  const sourceLabel = detail.sourceType === "pdf" ? "PDF 원문" : "공고 페이지 본문";
+  const parts = [];
+
+  if (stageCount) {
+    parts.push(`전형 ${stageCount}단계`);
+  }
+
+  if (bonusCount) {
+    parts.push(`가점 ${bonusCount}개 범주`);
+  }
+
+  if (parts.length) {
+    return `${sourceLabel}을 직접 읽어 ${parts.join("와 ")}를 정리했습니다.`;
+  }
+
+  return `${sourceLabel}을 직접 읽었지만 전형/가점 정보가 희박해 기본 정보 위주로 정리했습니다.`;
+}
+
+function buildLatestNoticeSummary(baseSummary, detail, analysisData) {
+  const detailSummary = buildLatestDetailMessage(detail, analysisData);
+  const summary = asText(baseSummary);
+
+  if (!summary || isPlaceholderLatestSummary(summary)) {
+    return detailSummary;
+  }
+
+  if (summary.includes(detailSummary)) {
+    return trimSummary(summary, 220);
+  }
+
+  return trimSummary(`${summary} ${detailSummary}`, 220);
+}
+
+function isPlaceholderLatestSummary(value) {
+  return /최신 공고 원문.*(찾았습니다|확인했습니다)|상세 전형.*생략/i.test(asText(value));
+}
+
+function mergeInformationItems(...groups) {
+  const merged = [];
+  const seenLabels = new Set();
+
+  groups.flat().forEach((item) => {
+    const label = asText(item?.label);
+    const value = asText(item?.value);
+
+    if (!label || !value || seenLabels.has(label)) {
+      return;
+    }
+
+    seenLabels.add(label);
+    merged.push({ label, value });
   });
+
+  return merged;
+}
+
+function mergeSourceCards(...groups) {
+  const merged = [];
+  const seen = new Set();
+
+  groups.flat().forEach((source) => {
+    const title = asText(source?.title, "기준 자료");
+    const url = asText(source?.url);
+    const note = asText(source?.note, "");
+    const linkLabel = asText(source?.linkLabel, url ? "원문 보기" : "");
+    const key = url || `${title}:${note}`;
+
+    if (!title && !url) {
+      return;
+    }
+
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    merged.push({
+      title,
+      url,
+      note,
+      linkLabel,
+    });
+  });
+
+  return merged;
+}
+
+function pickMeaningfulText(...values) {
+  const normalizedValues = values.map((value) => asText(value)).filter(Boolean);
+  const meaningfulValue = normalizedValues.find((value) => isMeaningfulValue(value));
+  return meaningfulValue || normalizedValues[0] || "";
+}
+
+function hasDetailedAnalysisData(data) {
+  return (
+    countMeaningfulProcessStages(data?.process) > 0 ||
+    countMeaningfulBonusItems(data?.bonusPoints) > 0
+  );
+}
+
+function countMeaningfulProcessStages(stages) {
+  return toArray(stages).filter((stage) => isMeaningfulProcessStage(stage)).length;
+}
+
+function countMeaningfulBonusItems(items) {
+  return toArray(items).filter((item) => isMeaningfulBonusItem(item)).length;
+}
+
+function isMeaningfulProcessStage(stage) {
+  return Boolean(
+    isMeaningfulValue(stage?.schedule) ||
+      isMeaningfulValue(stage?.selectionRatio) ||
+      isMeaningfulValue(stage?.score) ||
+      isMeaningfulValue(stage?.tieBreaker) ||
+      toArray(stage?.evaluationItems).some((value) => isMeaningfulValue(value))
+  );
+}
+
+function isMeaningfulBonusItem(item) {
+  return Boolean(isMeaningfulValue(item?.details) || isMeaningfulValue(item?.points));
 }
 
 function mergeLatestSources(groundedSources, preferredSource, payload) {
@@ -1825,7 +2252,7 @@ function parseLatestNoticePayload(text, payload, groundedSources = []) {
           applicationPeriod: "미기재",
           summary:
             trimSummary(text, 180) ||
-            "최신 공고 원문을 찾았습니다. 상세 전형 분석과 가점 분석은 아직 생략하고 있습니다.",
+            "최신 공고 원문을 찾았습니다. 원문 기반으로 전형과 가점을 이어서 정리합니다.",
         },
         source: {
           title: asText(groundedSource.title, fallbackTitle || "공고 원문"),
@@ -1846,7 +2273,7 @@ function parseLatestNoticePayload(text, payload, groundedSources = []) {
       employmentType: payload.employmentType || "미기재",
       headcount: "미기재",
       applicationPeriod: "미기재",
-      summary: "최신 공고 원문 링크를 찾았습니다. 상세 전형 분석과 가점 분석은 아직 생략하고 있습니다.",
+      summary: "최신 공고 원문 링크를 찾았습니다. 원문 기반으로 전형과 가점을 이어서 정리합니다.",
     },
     source: {
       title: asText(groundedSource.title, "공고 원문"),
