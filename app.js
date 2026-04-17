@@ -6,6 +6,7 @@ const PDFJS_WORKER_URL =
   "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 
 let pdfjsLibPromise = null;
+let activeUploadedFileUrl = "";
 
 const LATEST_NOTICE_SCHEMA = {
   type: "object",
@@ -97,6 +98,7 @@ function initialize() {
   elements.form.addEventListener("change", clearFieldError);
   elements.form.addEventListener("submit", handleAnalyze);
   elements.editButton.addEventListener("click", handleEdit);
+  window.addEventListener("beforeunload", releaseUploadedFileUrl);
 }
 
 function getSelectedValue(name) {
@@ -220,6 +222,7 @@ async function handleAnalyze(event) {
     localStorage.setItem(STORAGE_KEY, payload.apiKey);
   }
 
+  releaseUploadedFileUrl();
   showResultsView();
   setBusy(true);
   setStatus(
@@ -262,13 +265,7 @@ async function handleAnalyze(event) {
       const file = elements.noticeFile.files[0];
       const extractedText = await extractPdfText(file);
       analysisData = analyzeUploadedNotice(extractedText, payload, file.name);
-      sources = [
-        {
-          title: file.name,
-          note: "업로드한 PDF를 브라우저에서 직접 읽어 정리했습니다.",
-          url: "",
-        },
-      ];
+      sources = [buildUploadedFileSource(file)];
     }
 
     renderAnalysis(analysisData, payload, sources);
@@ -332,6 +329,7 @@ function getFieldLabel(element) {
 }
 
 function handleEdit() {
+  releaseUploadedFileUrl();
   showInputView();
   clearFormStatus();
   elements.companyName.focus();
@@ -564,7 +562,7 @@ function cleanPdfText(text) {
 function analyzeUploadedNotice(text, payload, fileName) {
   const lines = splitLines(text);
   const notice = buildLocalNotice(text, lines, payload, fileName);
-  const information = buildLocalInformation(text, lines, payload, notice);
+  const information = buildLocalInformation(text, lines, payload, notice, fileName);
   const process = buildLocalProcess(text, lines);
   const bonusPoints = buildLocalBonus(text, lines);
 
@@ -600,7 +598,7 @@ function buildSummary(payload, title, employmentType) {
   return `${payload.companyName}의 ${title}를 기준으로 ${payload.educationLevel} 채용과 ${employmentPhrase} 정보를 정리했습니다.`;
 }
 
-function buildLocalInformation(text, lines, payload, notice) {
+function buildLocalInformation(text, lines, payload, notice, fileName) {
   const items = [
     {
       label: "지원 자격",
@@ -611,7 +609,8 @@ function buildLocalInformation(text, lines, payload, notice) {
     { label: "고용 형태", value: notice.employmentType },
     { label: "모집 인원", value: notice.headcount },
     { label: "접수 기간", value: notice.applicationPeriod },
-  ];
+    fileName ? { label: "기준 파일", value: fileName } : null,
+  ].filter(Boolean);
 
   const extraItems = [
     {
@@ -640,7 +639,7 @@ function buildLocalInformation(text, lines, payload, notice) {
     }
   }
 
-  return dedupeInformation(items).slice(0, 8);
+  return dedupeInformation(items).slice(0, 9);
 }
 
 function buildLocalProcess(text, lines) {
@@ -1004,6 +1003,27 @@ function isPdfFile(file) {
   return file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name));
 }
 
+function releaseUploadedFileUrl() {
+  if (!activeUploadedFileUrl) {
+    return;
+  }
+
+  URL.revokeObjectURL(activeUploadedFileUrl);
+  activeUploadedFileUrl = "";
+}
+
+function buildUploadedFileSource(file) {
+  releaseUploadedFileUrl();
+  activeUploadedFileUrl = URL.createObjectURL(file);
+
+  return {
+    title: file.name,
+    note: "업로드한 PDF를 기준 파일로 사용했습니다.",
+    url: activeUploadedFileUrl,
+    linkLabel: "파일 열기",
+  };
+}
+
 function normalizeLatestNoticeResult(raw, payload, groundedSources = []) {
   const notice = raw?.notice ?? {};
   const source = raw?.source ?? {};
@@ -1043,7 +1063,7 @@ function buildLatestFetchAnalysis(notice, sources, payload) {
     { label: "접수 기간", value: notice.applicationPeriod },
     isMeaningfulUrl(primarySource.url)
       ? {
-          label: "원문 출처",
+          label: "원문 링크",
           value: asText(primarySource.title, safeDomain(primarySource.url)),
         }
       : null,
@@ -1300,11 +1320,11 @@ function renderSources(sources, payload) {
         .map(
           (source) => `
             <article class="source-card">
-              <h4>${escapeHtml(source.title || "출처")}</h4>
+              <h4>${escapeHtml(source.title || "기준 자료")}</h4>
               <p class="source-note">${escapeHtml(source.note || "")}</p>
               ${
                 source.url
-                  ? `<a class="source-link" href="${escapeAttribute(source.url)}" target="_blank" rel="noreferrer">원문 보기</a>`
+                  ? `<a class="source-link" href="${escapeAttribute(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.linkLabel || "원문 보기")}</a>`
                   : ""
               }
             </article>
@@ -1313,7 +1333,7 @@ function renderSources(sources, payload) {
         .join("")
     : `
         <div class="empty-state compact">
-          <p>출처 정보를 찾지 못했습니다.</p>
+          <p>기준 자료를 찾지 못했습니다.</p>
         </div>
       `;
 
@@ -1346,7 +1366,7 @@ function renderLoadingState() {
   elements.informationPanel.innerHTML = loadingBlock("핵심 정보를 정리하고 있습니다.");
   elements.processPanel.innerHTML = loadingBlock("채용 절차를 정리하고 있습니다.");
   elements.bonusPanel.innerHTML = loadingBlock("가점 항목을 확인하고 있습니다.");
-  elements.sourcePanel.innerHTML = loadingBlock("근거를 정리하고 있습니다.");
+  elements.sourcePanel.innerHTML = loadingBlock("기준 자료를 정리하고 있습니다.");
 }
 
 function loadingBlock(message) {
