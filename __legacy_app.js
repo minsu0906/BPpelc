@@ -1,26 +1,26 @@
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+
 const LATEST_MODEL_NAME = "gemini-2.5-flash-lite";
 const STORAGE_KEY = "job-bonus-radar-gemini-key";
 const UNKNOWN_TEXT = "공고에서 명시 여부 확인 필요";
-const PDFJS_MODULE_URL = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
-const PDFJS_WORKER_URL =
-  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 
-let pdfjsLibPromise = null;
-
-const LATEST_NOTICE_SCHEMA = {
-  type: "object",
+const ANALYSIS_SCHEMA = {
+  type: "OBJECT",
   properties: {
     notice: {
-      type: "object",
+      type: "OBJECT",
       properties: {
-        organization: { type: "string" },
-        title: { type: "string" },
-        noticeDate: { type: "string" },
-        educationLevel: { type: "string" },
-        employmentType: { type: "string" },
-        headcount: { type: "string" },
-        applicationPeriod: { type: "string" },
-        summary: { type: "string" },
+        organization: { type: "STRING" },
+        title: { type: "STRING" },
+        noticeDate: { type: "STRING" },
+        educationLevel: { type: "STRING" },
+        employmentType: { type: "STRING" },
+        headcount: { type: "STRING" },
+        applicationPeriod: { type: "STRING" },
+        summary: { type: "STRING" },
       },
       required: [
         "organization",
@@ -33,24 +33,66 @@ const LATEST_NOTICE_SCHEMA = {
         "summary",
       ],
     },
-    source: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        url: { type: "string" },
-        note: { type: "string" },
+    information: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          label: { type: "STRING" },
+          value: { type: "STRING" },
+        },
+        required: ["label", "value"],
       },
-      required: ["title", "url", "note"],
+    },
+    process: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          stageName: { type: "STRING" },
+          schedule: { type: "STRING" },
+          evaluationItems: {
+            type: "ARRAY",
+            items: { type: "STRING" },
+          },
+          selectionRatio: { type: "STRING" },
+          score: { type: "STRING" },
+          tieBreaker: { type: "STRING" },
+          notes: {
+            type: "ARRAY",
+            items: { type: "STRING" },
+          },
+        },
+        required: [
+          "stageName",
+          "schedule",
+          "evaluationItems",
+          "selectionRatio",
+          "score",
+          "tieBreaker",
+          "notes",
+        ],
+      },
+    },
+    bonusPoints: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          category: { type: "STRING" },
+          details: { type: "STRING" },
+          points: { type: "STRING" },
+          notes: { type: "STRING" },
+        },
+        required: ["category", "details", "points", "notes"],
+      },
     },
   },
-  required: ["notice", "source"],
+  required: ["notice", "information", "process", "bonusPoints"],
 };
 
 const elements = {
-  body: document.body,
   form: document.getElementById("analysisForm"),
-  formPanel: document.getElementById("formPanel"),
-  formStatus: document.getElementById("formStatus"),
   companyName: document.getElementById("companyName"),
   apiKey: document.getElementById("apiKey"),
   apiKeyField: document.getElementById("apiKeyField"),
@@ -60,7 +102,6 @@ const elements = {
   questionPrompt: document.getElementById("questionPrompt"),
   modeHelper: document.getElementById("modeHelper"),
   analyzeButton: document.getElementById("analyzeButton"),
-  editButton: document.getElementById("editButton"),
   statusBadge: document.getElementById("statusBadge"),
   statusText: document.getElementById("statusText"),
   noticeCard: document.getElementById("noticeCard"),
@@ -86,17 +127,12 @@ function initialize() {
   }
 
   updateModeUI();
-  showInputView({ instant: true });
 
   elements.modeInputs.forEach((input) => {
     input.addEventListener("change", updateModeUI);
   });
 
-  elements.form.addEventListener("invalid", handleInvalidField, true);
-  elements.form.addEventListener("input", clearFieldError);
-  elements.form.addEventListener("change", clearFieldError);
   elements.form.addEventListener("submit", handleAnalyze);
-  elements.editButton.addEventListener("click", handleEdit);
 }
 
 function getSelectedValue(name) {
@@ -107,57 +143,8 @@ function getAnalysisMode() {
   return getSelectedValue("analysisMode");
 }
 
-function isLocalFileRuntime() {
-  return window.location.protocol === "file:";
-}
-
-function buildRuntimeHint() {
-  if (!isLocalFileRuntime()) {
-    return "";
-  }
-
-  return `
-    <p class="helper-note">
-      <strong>로컬 실행 안내</strong>
-      현재 <code>index.html</code>을 직접 열어둔 상태라 브라우저 보안 정책에 따라 PDF 분석 모듈이나 외부 API 요청이 차단될 수 있습니다.
-      가능하면 <code>python -m http.server 4173</code> 같은 로컬 서버나 배포 주소에서 다시 열어 주세요.
-    </p>
-  `;
-}
-
-async function ensurePdfJsLib() {
-  if (!pdfjsLibPromise) {
-    pdfjsLibPromise = import(PDFJS_MODULE_URL)
-      .then((module) => {
-        const library = module?.default ?? module;
-
-        if (typeof library?.getDocument !== "function" || !library?.GlobalWorkerOptions) {
-          throw new Error("PDF 분석 모듈 초기화에 실패했습니다.");
-        }
-
-        library.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-        return library;
-      })
-      .catch((error) => {
-        pdfjsLibPromise = null;
-
-        const wrappedError = new Error(
-          isLocalFileRuntime()
-            ? "브라우저가 로컬 파일 환경에서 PDF 분석 모듈 로딩을 차단했습니다. `python -m http.server 4173`처럼 간단한 로컬 서버로 열거나 배포 주소에서 다시 시도해 주세요."
-            : "PDF 분석 모듈을 불러오지 못했습니다. 네트워크 환경 또는 브라우저 확장 프로그램이 jsDelivr 로딩을 차단했을 수 있습니다."
-        );
-
-        wrappedError.cause = error;
-        throw wrappedError;
-      });
-  }
-
-  return pdfjsLibPromise;
-}
-
 function updateModeUI() {
   const isUploadMode = getAnalysisMode() === "upload";
-  const runtimeHint = buildRuntimeHint();
 
   elements.uploadField.classList.toggle("is-hidden", !isUploadMode);
   elements.noticeFile.required = isUploadMode;
@@ -175,25 +162,17 @@ function updateModeUI() {
     ? `
         <strong>특정 공고 업로드</strong>
         업로드한 PDF를 브라우저에서 직접 읽어 정리합니다. 무료 Gemini 한도와 무관하게 사용할 수 있고, 텍스트가 포함된 PDF일수록 더 정확합니다.
-        ${runtimeHint}
       `
     : `
         <strong>최신 공고 1회</strong>
         Gemini API로 검색 근거가 있는 최신 공고 1건만 찾습니다. 무료 키에서 <code>RESOURCE_EXHAUSTED</code>가 뜨면 일일 또는 분당 한도에 걸린 상태입니다.
-        ${runtimeHint}
       `;
-
-  if (isUploadMode) {
-    void ensurePdfJsLib().catch(() => {});
-  }
 }
 
 async function handleAnalyze(event) {
   event.preventDefault();
 
   updateModeUI();
-  clearAllFieldErrors();
-  clearFormStatus();
 
   if (!elements.form.reportValidity()) {
     return;
@@ -203,15 +182,11 @@ async function handleAnalyze(event) {
   const payload = collectPayload();
 
   if (mode === "upload" && !elements.noticeFile.files[0]) {
-    showInputView();
-    setFormStatus("error", "특정 공고 분석을 위해 PDF 파일을 업로드해 주세요.");
     setStatus("error", "파일 확인", "특정 공고 분석을 위해 PDF 파일을 업로드해 주세요.");
     return;
   }
 
   if (mode === "upload" && !isPdfFile(elements.noticeFile.files[0])) {
-    showInputView();
-    setFormStatus("error", "PDF 파일만 업로드할 수 있습니다.");
     setStatus("error", "파일 형식 확인", "PDF 파일만 업로드할 수 있습니다.");
     return;
   }
@@ -220,13 +195,12 @@ async function handleAnalyze(event) {
     localStorage.setItem(STORAGE_KEY, payload.apiKey);
   }
 
-  showResultsView();
   setBusy(true);
   setStatus(
     "loading",
     "분석 중",
     mode === "latest"
-      ? "최신 공고 1건을 찾고 있으며, 공고 원문과 기본 정보만 먼저 가져오고 있습니다."
+      ? "최신 공고 1건을 찾고 있으며, 해당 공고 기준으로 채용 정보를 정리하고 있습니다."
       : "업로드한 PDF를 브라우저에서 직접 읽고 채용 정보를 정리하고 있습니다."
   );
   renderLoadingState();
@@ -238,26 +212,11 @@ async function handleAnalyze(event) {
 
     if (mode === "latest") {
       const response = await requestLatestAnalysis(payload.apiKey, payload);
-      const groundedSources = normalizeGroundedSources(
+      const text = extractResponseText(response);
+      analysisData = normalizeAnalysisData(parseJsonObject(text));
+      sources = normalizeGroundedSources(
         response?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? []
       );
-      const text = extractResponseText(response, { allowEmpty: true });
-      const latestNotice = normalizeLatestNoticeResult(
-        parseLatestNoticePayload(text, payload, groundedSources),
-        payload,
-        groundedSources
-      );
-
-      sources = mergeLatestSources(groundedSources, latestNotice.source);
-      analysisData = buildLatestFetchAnalysis(latestNotice.notice, sources, payload);
-      const hasFetchedNotice =
-        isMeaningfulUrl(sources[0]?.url) || isMeaningfulValue(latestNotice.notice.title);
-
-      if (!hasFetchedNotice || isEffectivelyEmptyAnalysis(analysisData, sources)) {
-        throw new Error(
-          "조건에 맞는 최신 공고 원문을 찾지 못했습니다. 기업명이나 고용 형태 조건을 조금 넓혀 다시 시도해 주세요."
-        );
-      }
     } else {
       const file = elements.noticeFile.files[0];
       const extractedText = await extractPdfText(file);
@@ -276,7 +235,7 @@ async function handleAnalyze(event) {
       "success",
       "완료",
       mode === "latest"
-        ? "최신 공고 1건을 가져왔습니다. 상세 분석은 잠시 비워두고 공고 원문부터 보여주고 있습니다."
+        ? "최신 공고 1회 기준 정리가 완료되었습니다."
         : "업로드한 공고를 API 키 없이 바로 정리했습니다."
     );
   } catch (error) {
@@ -287,85 +246,6 @@ async function handleAnalyze(event) {
   } finally {
     setBusy(false);
   }
-}
-
-function handleInvalidField(event) {
-  const field = getFieldContainer(event.target);
-  const label = getFieldLabel(event.target);
-
-  if (field) {
-    field.classList.add("is-invalid");
-    field.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
-  }
-
-  showInputView();
-  setFormStatus("error", `${label} 항목을 먼저 입력해 주세요.`);
-  setStatus("error", "입력 확인", `${label} 항목을 먼저 입력해 주세요.`);
-}
-
-function clearFieldError(event) {
-  const field = getFieldContainer(event.target);
-  if (field) {
-    field.classList.remove("is-invalid");
-  }
-
-  clearFormStatus();
-}
-
-function clearAllFieldErrors() {
-  elements.form.querySelectorAll(".field.is-invalid").forEach((field) => {
-    field.classList.remove("is-invalid");
-  });
-}
-
-function getFieldContainer(element) {
-  return element?.closest?.(".field") ?? null;
-}
-
-function getFieldLabel(element) {
-  const field = getFieldContainer(element);
-  const label = field?.querySelector(":scope > span")?.textContent?.trim();
-  return label || "필수 입력";
-}
-
-function handleEdit() {
-  showInputView();
-  clearFormStatus();
-  elements.companyName.focus();
-}
-
-function showInputView(options = {}) {
-  setView("input", options);
-}
-
-function showResultsView(options = {}) {
-  setView("results", options);
-}
-
-function setView(view, options = {}) {
-  elements.body.dataset.view = view;
-
-  if (options.instant) {
-    return;
-  }
-
-  window.scrollTo({
-    top: 0,
-    behavior: "smooth",
-  });
-}
-
-function setFormStatus(type, message) {
-  elements.formStatus.textContent = message;
-  elements.formStatus.className = `form-status ${type} span-2`;
-}
-
-function clearFormStatus() {
-  elements.formStatus.textContent = "";
-  elements.formStatus.className = "form-status span-2 is-hidden";
 }
 
 function collectPayload() {
@@ -388,8 +268,8 @@ function buildLatestPrompt(payload) {
     : "- 질문 사항: 없음";
 
   return `
-당신은 한국 채용 공고 탐색 도우미다.
-Google Search grounding을 사용해 아래 조건과 가장 관련 있는 최신 공고 1건만 찾고, 공고 자체를 식별할 수 있는 기본 정보만 JSON으로 작성해라.
+당신은 한국 채용 공고 분석 도우미다.
+Google Search grounding을 사용해 아래 조건과 가장 관련 있는 최신 공고 1건만 찾고, 그 공고만 기준으로 JSON을 작성해라.
 
 사용자 조건
 - 기업명: ${payload.companyName}
@@ -399,19 +279,16 @@ ${questionLine}
 
 반드시 지킬 규칙
 - 검색 결과 여러 건을 섞지 말고 가장 최신 공고 1건만 사용한다.
-- 상세 전형 분석은 하지 말고 notice와 source만 채운다.
-- source.url에는 실제 공고 원문 URL 또는 공식 채용 페이지 URL 1개를 반드시 넣는다.
-- source.title에는 링크 제목 또는 공고 제목을 넣는다.
-- source.note에는 왜 이 공고를 선택했는지 한 문장으로 적는다.
 - 공고에 없는 내용은 추정하지 말고 "${UNKNOWN_TEXT}" 또는 "미기재"라고 적는다.
-- summary는 이 공고가 어떤 채용인지 1~2문장으로 짧게 요약한다.
-- 출력은 설명 없이 JSON 객체 하나만 반환한다.
-- Markdown 코드 블록, 머리말, 꼬리말, 참고 문장 없이 JSON만 응답한다.
+- information에는 지원 자격, 고용 형태, 모집 인원, 접수 기간을 반드시 포함하고, 필요하면 근무지/직무/제출 서류 등도 추가한다.
+- process는 공고에 맞는 실제 전형 단계를 나누고, 각 단계마다 schedule, evaluationItems, selectionRatio, score, tieBreaker, notes를 채운다.
+- bonusPoints는 실제 가점, 우대, 자격증 관련 내용을 적고, 수치가 없으면 "${UNKNOWN_TEXT}"라고 쓴다.
+- 출력은 JSON 객체 하나만 반환한다.
   `.trim();
 }
 
 async function requestLatestAnalysis(apiKey, payload) {
-  const requestBody = {
+  return callGemini(apiKey, {
     contents: [
       {
         parts: [{ text: buildLatestPrompt(payload) }],
@@ -422,26 +299,10 @@ async function requestLatestAnalysis(apiKey, payload) {
       temperature: 0.1,
       topP: 0.9,
       maxOutputTokens: 2200,
+      responseMimeType: "application/json",
+      responseJsonSchema: ANALYSIS_SCHEMA,
     },
-  };
-
-  if (supportsStructuredOutputWithTools(LATEST_MODEL_NAME)) {
-    requestBody.generationConfig.responseMimeType = "application/json";
-    requestBody.generationConfig.responseJsonSchema = LATEST_NOTICE_SCHEMA;
-  }
-
-  try {
-    return await callGemini(apiKey, requestBody);
-  } catch (error) {
-    if (!shouldRetryWithoutStructuredOutput(error, requestBody)) {
-      throw error;
-    }
-
-    delete requestBody.generationConfig.responseMimeType;
-    delete requestBody.generationConfig.responseJsonSchema;
-
-    return callGemini(apiKey, requestBody);
-  }
+  });
 }
 
 async function callGemini(apiKey, requestBody) {
@@ -484,7 +345,6 @@ async function callGemini(apiKey, requestBody) {
 }
 
 async function extractPdfText(file) {
-  const pdfjsLib = await ensurePdfJsLib();
   const data = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjsLib.getDocument({ data }).promise;
   const pages = [];
@@ -1004,92 +864,6 @@ function isPdfFile(file) {
   return file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name));
 }
 
-function normalizeLatestNoticeResult(raw, payload, groundedSources = []) {
-  const notice = raw?.notice ?? {};
-  const source = raw?.source ?? {};
-  const groundedSource = toArray(groundedSources)[0] ?? {};
-  const sourceTitle = asText(source.title, asText(groundedSource.title, ""));
-  const sourceUrl = asText(source.url, asText(groundedSource.url, ""));
-  const sourceNote = asText(source.note, asText(groundedSource.note, ""));
-
-  return {
-    notice: {
-      organization: asText(notice.organization, payload.companyName || "기업명 미기재"),
-      title: asText(notice.title, sourceTitle || "공고 제목 미기재"),
-      noticeDate: asText(notice.noticeDate, "미기재"),
-      educationLevel: asText(notice.educationLevel, payload.educationLevel || "미기재"),
-      employmentType: asText(notice.employmentType, payload.employmentType || "미기재"),
-      headcount: asText(notice.headcount, "미기재"),
-      applicationPeriod: asText(notice.applicationPeriod, "미기재"),
-      summary: asText(
-        notice.summary,
-        "최신 공고 원문을 찾았습니다. 상세 전형 분석과 가점 분석은 아직 생략하고 있습니다."
-      ),
-    },
-    source: {
-      title: sourceTitle || "공고 원문",
-      url: sourceUrl,
-      note: sourceNote || (isMeaningfulUrl(sourceUrl) ? safeDomain(sourceUrl) : ""),
-    },
-  };
-}
-
-function buildLatestFetchAnalysis(notice, sources, payload) {
-  const primarySource = toArray(sources)[0] ?? {};
-  const information = dedupeInformation([
-    { label: "지원 학력", value: notice.educationLevel || payload.educationLevel },
-    { label: "고용 형태", value: notice.employmentType || payload.employmentType || "미기재" },
-    { label: "모집 인원", value: notice.headcount },
-    { label: "접수 기간", value: notice.applicationPeriod },
-    isMeaningfulUrl(primarySource.url)
-      ? {
-          label: "원문 출처",
-          value: asText(primarySource.title, safeDomain(primarySource.url)),
-        }
-      : null,
-    {
-      label: "상세 분석",
-      value: "공고 원문 확인 완료. 전형/가점 분석은 아직 생략했습니다.",
-    },
-  ]);
-
-  return normalizeAnalysisData({
-    notice: {
-      organization: notice.organization,
-      title: notice.title,
-      noticeDate: notice.noticeDate,
-      educationLevel: notice.educationLevel,
-      employmentType: notice.employmentType,
-      headcount: notice.headcount,
-      applicationPeriod: notice.applicationPeriod,
-      summary: notice.summary,
-    },
-    information,
-    process: [],
-    bonusPoints: [],
-  });
-}
-
-function mergeLatestSources(groundedSources, preferredSource) {
-  const seen = new Set();
-
-  return [preferredSource, ...toArray(groundedSources)]
-    .map((source) => ({
-      title: asText(source?.title, "공고 원문"),
-      url: asText(source?.url),
-      note: asText(source?.note, ""),
-    }))
-    .filter((source) => isMeaningfulUrl(source.url))
-    .filter((source) => {
-      if (seen.has(source.url)) {
-        return false;
-      }
-
-      seen.add(source.url);
-      return true;
-    });
-}
-
 function normalizeAnalysisData(raw) {
   const notice = raw?.notice ?? {};
 
@@ -1130,27 +904,6 @@ function normalizeAnalysisData(raw) {
       notes: asText(item?.notes, UNKNOWN_TEXT),
     })),
   };
-}
-
-function isEffectivelyEmptyAnalysis(data, sources) {
-  const notice = data?.notice ?? {};
-  const missingNotice =
-    !isMeaningfulValue(notice.organization) && !isMeaningfulValue(notice.title);
-  const hasInformation = toArray(data?.information).some((item) => isMeaningfulValue(item?.value));
-  const hasProcess = toArray(data?.process).some(
-    (item) =>
-      isMeaningfulValue(item?.schedule) ||
-      isMeaningfulValue(item?.selectionRatio) ||
-      isMeaningfulValue(item?.score) ||
-      isMeaningfulValue(item?.tieBreaker) ||
-      toArray(item?.evaluationItems).some((value) => isMeaningfulValue(value))
-  );
-  const hasBonus = toArray(data?.bonusPoints).some(
-    (item) => isMeaningfulValue(item?.details) || isMeaningfulValue(item?.points)
-  );
-  const hasSources = Array.isArray(sources) && sources.length > 0;
-
-  return missingNotice && !hasInformation && !hasProcess && !hasBonus && !hasSources;
 }
 
 function renderAnalysis(data, payload, sources) {
@@ -1399,20 +1152,7 @@ function revealResults() {
   });
 }
 
-function supportsStructuredOutputWithTools(modelName) {
-  return /^gemini-3/i.test(String(modelName ?? "").trim());
-}
-
-function shouldRetryWithoutStructuredOutput(error, requestBody) {
-  const message = error instanceof Error ? error.message : "";
-  const hasStructuredOutput =
-    Boolean(requestBody?.generationConfig?.responseMimeType) ||
-    Boolean(requestBody?.generationConfig?.responseJsonSchema);
-
-  return hasStructuredOutput && /tool use with a response mime type/i.test(message);
-}
-
-function extractResponseText(data, options = {}) {
+function extractResponseText(data) {
   const parts = data?.candidates?.[0]?.content?.parts ?? [];
   const text = parts
     .filter((part) => typeof part.text === "string")
@@ -1421,10 +1161,6 @@ function extractResponseText(data, options = {}) {
     .trim();
 
   if (!text) {
-    if (options.allowEmpty) {
-      return "";
-    }
-
     throw new Error("모델 응답에서 텍스트를 찾지 못했습니다.");
   }
 
@@ -1448,69 +1184,6 @@ function parseJsonObject(text) {
   } catch {
     throw new Error("모델 응답 JSON을 파싱하지 못했습니다.");
   }
-}
-
-function parseLatestNoticePayload(text, payload, groundedSources = []) {
-  if (text) {
-    try {
-      return parseJsonObject(text);
-    } catch {
-      const groundedSource = toArray(groundedSources)[0] ?? {};
-      const fallbackTitle = extractNoticeTitleFromText(text) || asText(groundedSource.title, "");
-      const fallbackUrl = extractFirstUrl(text) || asText(groundedSource.url);
-
-      return {
-        notice: {
-          organization: payload.companyName || "기업명 미기재",
-          title: fallbackTitle || "공고 제목 미기재",
-          noticeDate: "미기재",
-          educationLevel: payload.educationLevel || "미기재",
-          employmentType: payload.employmentType || "미기재",
-          headcount: "미기재",
-          applicationPeriod: "미기재",
-          summary:
-            trimSummary(text, 180) ||
-            "최신 공고 원문을 찾았습니다. 상세 전형 분석과 가점 분석은 아직 생략하고 있습니다.",
-        },
-        source: {
-          title: asText(groundedSource.title, fallbackTitle || "공고 원문"),
-          url: fallbackUrl,
-          note: "모델 자유 형식 응답에서 공고 정보를 보정했습니다.",
-        },
-      };
-    }
-  }
-
-  const groundedSource = toArray(groundedSources)[0] ?? {};
-  return {
-    notice: {
-      organization: payload.companyName || "기업명 미기재",
-      title: asText(groundedSource.title, "공고 제목 미기재"),
-      noticeDate: "미기재",
-      educationLevel: payload.educationLevel || "미기재",
-      employmentType: payload.employmentType || "미기재",
-      headcount: "미기재",
-      applicationPeriod: "미기재",
-      summary: "최신 공고 원문 링크를 찾았습니다. 상세 전형 분석과 가점 분석은 아직 생략하고 있습니다.",
-    },
-    source: {
-      title: asText(groundedSource.title, "공고 원문"),
-      url: asText(groundedSource.url),
-      note: asText(groundedSource.note, ""),
-    },
-  };
-}
-
-function extractFirstUrl(text) {
-  const match = String(text ?? "").match(/https?:\/\/\S+/i);
-  return match ? match[0].replace(/[)\],.]+$/g, "") : "";
-}
-
-function extractNoticeTitleFromText(text) {
-  return (
-    splitLines(text).find((line) => /채용|모집|공고|인턴|신입|경력/.test(line) && line.length <= 120) ||
-    ""
-  );
 }
 
 function normalizeGroundedSources(chunks) {
@@ -1555,10 +1228,6 @@ function resolveErrorMessage(error, mode) {
     return "이 API 키는 Google에서 노출된 키로 판단해 차단했을 수 있습니다. 새 키를 발급해 다시 시도해 주세요.";
   }
 
-  if (/tool use with a response mime type/i.test(message)) {
-    return "현재 사용 중인 Gemini 모델은 검색 도구와 JSON 강제 응답을 함께 처리하지 못해 실패했습니다. 최신 공고 요청은 이제 도구 호환 방식으로 다시 보내도록 수정해야 하며, 배포가 갱신되면 정상 동작해야 합니다.";
-  }
-
   if (mode === "upload") {
     return message || "업로드한 공고를 분석하지 못했습니다. 텍스트가 포함된 PDF인지 확인해 주세요.";
   }
@@ -1589,25 +1258,6 @@ function asText(value, fallback = "") {
   }
 
   return fallback;
-}
-
-function isMeaningfulUrl(value) {
-  return /^https?:\/\/\S+/i.test(asText(value));
-}
-
-function isMeaningfulValue(value) {
-  const text = asText(value).trim();
-  return Boolean(
-    text &&
-      ![
-        "",
-        UNKNOWN_TEXT,
-        "미기재",
-        "기업명 미기재",
-        "공고 제목 미기재",
-        "요약 정보가 없습니다.",
-      ].includes(text)
-  );
 }
 
 function uniqueTexts(values) {

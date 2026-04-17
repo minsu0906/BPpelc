@@ -261,6 +261,15 @@ textarea:focus {
   color: var(--ink);
 }
 
+.helper-note {
+  margin: 12px 0 0;
+}
+
+.helper-note code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.95em;
+}
+
 .submit-row {
   display: flex;
   justify-content: flex-start;
